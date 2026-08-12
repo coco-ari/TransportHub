@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TransportHub 悬浮投递窗原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #6f7788;
+      --line: #e6e9f0;
+      --panel: rgba(255,255,255,.96);
+      --purple: #6e56e8;
+      --purple-2: #8a74f5;
+      --purple-soft: #f0edff;
+      --green: #25a977;
+      --green-soft: #eaf8f2;
+      --amber: #c78318;
+      --amber-soft: #fff5df;
+      --red: #d85757;
+      --shadow: 0 22px 70px rgba(35, 42, 68, .25), 0 2px 10px rgba(35, 42, 68, .12);
+      font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 1080px; min-height: 760px; background: #e9edf5; color: var(--ink); overflow: hidden; }
+    button, textarea { font: inherit; }
+    button { color: inherit; }
+
+    .prototype-shell { display: grid; grid-template-columns: 268px 1fr; width: 100vw; height: 100vh; }
+    .sidebar {
+      position: relative; z-index: 10; padding: 26px 22px; background: rgba(250,251,254,.96);
+      border-right: 1px solid rgba(120,130,160,.18); box-shadow: 10px 0 30px rgba(50,60,90,.05);
+    }
+    .brand-line { display: flex; align-items: center; gap: 11px; }
+    .brand-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 13px; color: white; font-weight: 800; background: linear-gradient(145deg, var(--purple), #9f75f4); box-shadow: 0 8px 18px rgba(110,86,232,.28); }
+    .sidebar h1 { margin: 0; font-size: 18px; letter-spacing: -.2px; }
+    .sidebar .sub { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+    .demo-badge { display: inline-flex; align-items: center; gap: 7px; margin: 22px 0 26px; padding: 8px 10px; border-radius: 9px; color: #765d18; background: #fff5d8; border: 1px solid #f3dfa0; font-size: 12px; }
+    .demo-dot { width: 7px; height: 7px; border-radius: 50%; background: #e0a21d; }
+    .side-label { margin: 20px 8px 8px; color: #969dab; font-size: 11px; font-weight: 700; letter-spacing: .8px; }
+    .state-list { display: grid; gap: 5px; }
+    .state-button { width: 100%; border: 0; border-radius: 10px; padding: 10px 11px; text-align: left; cursor: pointer; background: transparent; font-size: 13px; transition: .18s ease; }
+    .state-button:hover { background: #f0f2f7; }
+    .state-button.active { color: #5a43ce; background: var(--purple-soft); font-weight: 700; }
+    .decision-list { margin: 9px 0 0; padding: 0 0 0 23px; color: #6e7687; font-size: 12px; line-height: 1.65; }
+    .sidebar-footer { position: absolute; left: 22px; right: 22px; bottom: 22px; color: #969dab; font-size: 11px; line-height: 1.55; }
+
+    .stage { position: relative; overflow: hidden; background:
+      radial-gradient(circle at 76% 14%, rgba(162,133,244,.44), transparent 29%),
+      radial-gradient(circle at 20% 78%, rgba(89,160,224,.28), transparent 34%),
+      linear-gradient(145deg, #dbe6f4 0%, #f0eafa 51%, #dce9f1 100%); }
+    .stage::before { content: ""; position: absolute; width: 460px; height: 460px; left: 12%; top: 12%; border-radius: 46% 54% 65% 35%; background: linear-gradient(145deg, rgba(255,255,255,.40), rgba(255,255,255,.05)); filter: blur(1px); transform: rotate(-11deg); }
+    .stage-top { position: absolute; left: 28px; top: 25px; z-index: 2; }
+    .stage-title { margin: 0; font-size: 15px; font-weight: 700; }
+    .stage-help { margin-top: 5px; color: rgba(30,42,62,.62); font-size: 12px; }
+    .taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 52px; background: rgba(245,248,252,.72); border-top: 1px solid rgba(255,255,255,.6); backdrop-filter: blur(20px); }
+    .taskbar-icons { display: flex; justify-content: center; gap: 8px; padding-top: 8px; }
+    .task-icon { width: 35px; height: 35px; border-radius: 8px; background: rgba(255,255,255,.75); box-shadow: 0 2px 8px rgba(40,50,80,.08); }
+
+    .widget {
+      position: absolute; z-index: 5; top: 50%; left: 50%; width: 330px; height: 480px;
+      transform: translate(-42%, -51%); overflow: hidden; border: 1px solid rgba(255,255,255,.8);
+      border-radius: 20px; background: var(--panel); box-shadow: var(--shadow); backdrop-filter: blur(24px);
+      transition: width .28s ease, height .28s ease, border-radius .28s ease, box-shadow .28s ease;
+    }
+    .widget.collapsed { left: auto; right: 22px; width: 40px; height: 40px; transform: translateY(-50%); overflow: visible; border-radius: 13px; cursor: pointer; box-shadow: 0 10px 28px rgba(64,49,143,.30); }
+    .widget.collapsed .widget-body, .widget.collapsed .brand-copy, .widget.collapsed .online-chip, .widget.collapsed .window-actions { display: none !important; }
+    .widget.collapsed .titlebar { width: 40px; height: 40px; justify-content: center; padding: 0; border: 0; border-radius: 13px; cursor: pointer; }
+    .widget.collapsed .app-icon { width: 32px; height: 32px; border-radius: 10px; font-size: 14px; }
+    .widget.collapsed .floating-badge { display: grid; }
+    .widget.collapsed::after { content: ""; position: absolute; right: 3px; bottom: 3px; width: 7px; height: 7px; border: 1px solid white; border-radius: 50%; background: var(--green); }
+    .floating-badge { position: absolute; z-index: 3; right: -5px; top: -7px; display: none; place-items: center; min-width: 23px; height: 23px; padding: 0 6px; border: 3px solid white; border-radius: 12px; color: white; background: #ec5368; box-shadow: 0 5px 12px rgba(190,50,75,.28); font-size: 9px; font-weight: 800; }
+    .widget.dragging { border-color: #8069ee; box-shadow: 0 20px 60px rgba(91,67,202,.35); }
+    .widget.dragging:not(.collapsed)::before { content: "松开发送文件到全部电脑"; position: absolute; z-index: 30; inset: 66px 0 0; display: grid; place-items: center; color: #563fc8; background: rgba(241,237,255,.94); border: 2px dashed #8d78ef; font-size: 15px; font-weight: 800; }
+    .widget.collapsed.dragging { transform: translateY(-50%) scale(1.08); }
+
+    .titlebar { height: 52px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--line); user-select: none; }
+    .app-icon { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 auto; color: white; font-weight: 800; font-size: 14px; border-radius: 11px; background: linear-gradient(145deg, var(--purple), #9f75f4); box-shadow: 0 7px 16px rgba(110,86,232,.25); }
+    .brand-copy { min-width: 0; flex: 1; }
+    .brand-copy .title { font-size: 13px; font-weight: 750; white-space: nowrap; }
+    .brand-copy .caption { margin-top: 1px; color: var(--muted); font-size: 8px; }
+    .online-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px; white-space: nowrap; border-radius: 7px; color: #16815a; background: var(--green-soft); font-size: 8px; font-weight: 700; }
+    .online-chip.offline { color: #a26310; background: var(--amber-soft); }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .window-actions { display: flex; align-items: center; gap: 2px; }
+    .icon-button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; cursor: pointer; border: 0; border-radius: 8px; color: #6d7482; background: transparent; font-size: 14px; }
+    .icon-button:hover { color: #4232a8; background: var(--purple-soft); }
+    .icon-button.pinned { color: var(--purple); background: var(--purple-soft); }
+
+    .widget-body { height: calc(100% - 52px); display: flex; flex-direction: column; }
+    .content { position: relative; flex: 1; min-height: 0; padding: 7px 11px 0; overflow: hidden; }
+    .target-row { display: flex; align-items: center; justify-content: space-between; margin: 0 1px 12px; }
+    .target-main { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+    .target-main strong { color: #3f3293; }
+    .target-count { color: var(--muted); font-size: 10px; }
+
+    .drop-zone { position: relative; height: 154px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1.5px dashed #bdb3ec; border-radius: 16px; background: linear-gradient(145deg, #f8f6ff, #f2f0fd); cursor: pointer; transition: .18s ease; }
+    .drop-zone:hover, .drop-zone.dragging { border-color: var(--purple); background: #eeebff; transform: translateY(-1px); }
+    .drop-orbit { position: relative; width: 47px; height: 43px; margin-bottom: 9px; }
+    .folder-shape { position: absolute; inset: 7px 0 0; border-radius: 8px; background: linear-gradient(145deg, #826bf0, #a491ff); box-shadow: 0 7px 18px rgba(110,86,232,.2); }
+    .folder-shape::before { content: ""; position: absolute; left: 5px; top: -5px; width: 19px; height: 8px; border-radius: 5px 5px 0 0; background: #826bf0; }
+    .arrow-up { position: absolute; z-index: 2; left: 18px; top: 17px; color: white; font-size: 19px; font-weight: 800; line-height: 1; }
+    .drop-title { font-size: 14px; font-weight: 750; }
+    .drop-copy { margin-top: 5px; color: var(--muted); font-size: 10px; }
+    .drop-tag { margin-top: 8px; padding: 4px 8px; border-radius: 7px; color: #5d48cb; background: rgba(255,255,255,.78); font-size: 9px; }
+    .quick-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+    .quick-button { height: 39px; border: 1px solid var(--line); border-radius: 11px; cursor: pointer; background: #fff; color: #41495a; font-size: 11px; font-weight: 650; transition: .16s ease; }
+    .quick-button:hover { border-color: #c9c0f3; color: #5944c9; background: #faf9ff; }
+
+    .section-heading { display: flex; align-items: center; justify-content: space-between; margin: 17px 1px 9px; }
+    .section-heading strong { font-size: 12px; }
+    .section-heading button { border: 0; padding: 3px 0; color: var(--muted); background: transparent; font-size: 10px; cursor: pointer; }
+    .activity-list { display: grid; gap: 7px; }
+    .activity { display: grid; grid-template-columns: 37px minmax(0,1fr) auto; align-items: center; gap: 9px; min-height: 51px; padding: 7px 8px; border: 1px solid #eceef3; border-radius: 12px; background: #fff; cursor: pointer; transition: .15s ease; }
+    .activity:hover { border-color: #d7d1f2; box-shadow: 0 4px 13px rgba(65,55,120,.08); }
+    .file-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: #fff; font-size: 9px; font-weight: 800; background: linear-gradient(145deg, #6f98e9, #7c71e9); }
+    .file-icon.video { background: linear-gradient(145deg, #e07a83, #a76ce3); }
+    .file-icon.archive { background: linear-gradient(145deg, #d49d48, #df7866); }
+    .file-icon.text { background: linear-gradient(145deg, #60b99d, #5f93d7); }
+    .file-info { min-width: 0; }
+    .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 700; }
+    .file-meta { margin-top: 3px; color: #949aa7; font-size: 9px; }
+    .state-chip { padding: 4px 6px; border-radius: 7px; color: #17815b; background: var(--green-soft); white-space: nowrap; font-size: 9px; font-weight: 700; }
+    .state-chip.syncing { color: #5a43ce; background: var(--purple-soft); }
+    .state-chip.waiting { color: #a36912; background: var(--amber-soft); }
+    .mini-progress { height: 3px; margin-top: 5px; border-radius: 3px; overflow: hidden; background: #ece9fa; }
+    .mini-progress span { display: block; width: 68%; height: 100%; background: linear-gradient(90deg, var(--purple), #9e79f2); }
+
+    .footerbar { height: 28px; display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto; margin-top: 0; padding: 0 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 8px; background: rgba(249,250,252,.8); }
+    .footer-status { display: flex; align-items: center; gap: 6px; }
+    .footer-status .status-dot { color: var(--green); }
+    .footer-link { border: 0; padding: 3px 0; cursor: pointer; color: #5d49cb; background: transparent; font-size: 8px; font-weight: 700; }
+
+    .view.messages-view.active { position: absolute; inset: 7px 11px 7px; display: flex; flex-direction: column; height: auto; }
+    .mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; border-radius: 11px; background: #f0f1f5; }
+    .mode-tab { height: 30px; border: 0; border-radius: 8px; cursor: pointer; color: #777e8e; background: transparent; font-size: 10px; font-weight: 700; }
+    .mode-tab.active { color: #5742c5; background: white; box-shadow: 0 2px 8px rgba(45,50,75,.08); }
+    .conversation-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 4px; }
+    .conversation-head strong { font-size: 10px; }
+    .conversation-head span { color: var(--muted); font-size: 8px; }
+    .chat-timeline { flex: 1; min-height: 0; padding: 3px 2px 5px; overflow-y: auto; scrollbar-width: thin; }
+    .day-divider { display: flex; align-items: center; gap: 8px; margin: 2px 0 7px; color: #9ba1ad; font-size: 7px; }
+    .day-divider::before, .day-divider::after { content: ""; flex: 1; height: 1px; background: #eceef3; }
+    .message-row { display: flex; flex-direction: column; align-items: flex-start; margin-bottom: 7px; }
+    .message-row.outgoing { align-items: flex-end; }
+    .sender-name { margin: 0 0 3px 5px; color: #7f8796; font-size: 7px; font-weight: 700; }
+    .message-bubble { position: relative; max-width: 84%; padding: 7px 9px; border: 1px solid #e6e8ee; border-radius: 5px 11px 11px 11px; color: #394153; background: white; box-shadow: 0 2px 7px rgba(45,50,75,.04); font-size: 9px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .message-bubble.copyable { cursor: copy; user-select: text; }
+    .message-bubble.copyable:hover { border-color: #bdb2f0; background: #fbfaff; }
+    .message-bubble.copyable:hover::after { content: "单击复制"; position: absolute; right: 7px; bottom: -15px; z-index: 3; padding: 2px 5px; border-radius: 5px; color: white; background: rgba(47,52,66,.84); font-size: 7px; white-space: nowrap; }
+    .outgoing .message-bubble { border-color: #d9d1fb; border-radius: 13px 5px 13px 13px; color: #3f337e; background: #eeeaff; }
+    .message-meta { margin-top: 3px; color: #9aa0ad; font-size: 7px; }
+    .message-meta.delivered { color: #6a56ce; }
+    .file-bubble { width: 84%; display: grid; grid-template-columns: 32px minmax(0,1fr) 13px; align-items: center; gap: 8px; padding: 7px; border: 1px solid #e4e6ed; border-radius: 11px; background: white; box-shadow: 0 2px 7px rgba(45,50,75,.04); cursor: pointer; }
+    .file-bubble:hover { border-color: #bdb2f0; background: #fbfaff; }
+    .file-bubble .file-icon { width: 30px; height: 30px; border-radius: 9px; font-size: 7px; }
+    .file-bubble .file-name { font-size: 10px; }
+    .file-bubble .file-meta { font-size: 8px; }
+    .file-arrow { color: #9aa0ad; font-size: 15px; }
+    .chat-composer { flex: 0 0 auto; padding: 5px; border: 1px solid #ddd9f1; border-radius: 16px; background: rgba(250,249,255,.96); box-shadow: 0 4px 14px rgba(61,50,118,.06); }
+    .chat-input-row { display: grid; grid-template-columns: 34px minmax(0,1fr) 38px; align-items: center; gap: 5px; }
+    .attach-button { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 11px; cursor: pointer; color: #6956ce; background: transparent; transition: .15s ease; }
+    .attach-button:hover { background: var(--purple-soft); }
+    .attach-button svg { width: 17px; height: 17px; }
+    textarea { width: 100%; height: 38px; margin: 0; padding: 8px 7px; resize: none; outline: none; border: 0; border-radius: 10px; color: #31384a; background: transparent; font-size: 10px; line-height: 1.4; }
+    textarea::placeholder { color: #a1a6b2; }
+    textarea:focus { background: white; box-shadow: inset 0 0 0 1px rgba(110,86,232,.12); }
+    .send-icon-button { display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 0; border-radius: 12px; color: white; cursor: pointer; background: linear-gradient(135deg, var(--purple), var(--purple-2)); box-shadow: 0 6px 14px rgba(110,86,232,.22); transition: .15s ease; }
+    .send-icon-button:hover { transform: translateY(-1px); box-shadow: 0 8px 17px rgba(110,86,232,.28); }
+    .send-icon-button svg { width: 18px; height: 18px; }
+    .unified-hint { display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px; padding: 5px 7px; border-radius: 7px; color: #70658e; background: #f6f3ff; font-size: 7px; }
+    .unified-hint strong { color: #5d48cc; }
+    .image-bubble { width: 68%; overflow: hidden; border: 1px solid #e4e6ed; border-radius: 11px; background: white; box-shadow: 0 2px 7px rgba(45,50,75,.04); cursor: pointer; }
+    .image-bubble:hover { border-color: #bdb2f0; }
+    .image-preview { position: relative; height: 102px; overflow: hidden; background: linear-gradient(155deg, #8fb0df 0 45%, #e6c890 46% 62%, #809767 63%); }
+    .image-preview::before { content: ""; position: absolute; width: 160px; height: 80px; left: 42px; top: 43px; border-radius: 55% 45% 0 0; background: #6b805d; transform: rotate(-7deg); }
+    .image-preview::after { content: ""; position: absolute; width: 18px; height: 18px; right: 23px; top: 18px; border-radius: 50%; background: #ffe8a9; box-shadow: 0 0 18px rgba(255,232,169,.6); }
+    .image-caption { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; color: #606878; font-size: 7px; }
+    .link-bubble { width: 84%; display: grid; grid-template-columns: 27px minmax(0,1fr); align-items: center; gap: 7px; padding: 7px 8px; border: 1px solid #e1e4ec; border-radius: 10px; background: #fff; cursor: pointer; }
+    .link-symbol { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 8px; color: #654fd0; background: var(--purple-soft); font-size: 13px; }
+    .link-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #424a5a; font-size: 8px; font-weight: 700; }
+    .link-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; color: #969caa; font-size: 7px; }
+    .primary-button { height: 34px; padding: 0 15px; border: 0; border-radius: 10px; color: white; cursor: pointer; background: linear-gradient(135deg, var(--purple), var(--purple-2)); font-size: 10px; font-weight: 750; box-shadow: 0 6px 14px rgba(110,86,232,.20); }
+    .message-card { padding: 10px 11px; border: 1px solid #e8eaf0; border-radius: 12px; background: white; }
+
+    .empty-state { height: 420px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+    .empty-visual { position: relative; width: 108px; height: 82px; margin-bottom: 17px; }
+    .device-card { position: absolute; width: 56px; height: 67px; padding-top: 10px; border: 1px solid #ded9f6; border-radius: 15px; background: white; box-shadow: 0 8px 20px rgba(60,50,110,.1); }
+    .device-card:first-child { left: 4px; top: 9px; transform: rotate(-7deg); }
+    .device-card:last-child { right: 4px; top: 2px; transform: rotate(7deg); }
+    .device-screen { width: 34px; height: 27px; margin: auto; border-radius: 5px; background: var(--purple-soft); }
+    .device-line { width: 24px; height: 4px; margin: 7px auto 0; border-radius: 4px; background: #d7d1f5; }
+    .empty-state h2 { margin: 0; font-size: 16px; }
+    .empty-state p { width: 260px; margin: 8px 0 16px; color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .secondary-button { height: 34px; padding: 0 14px; border: 1px solid #d8d3ef; border-radius: 10px; color: #5b47c7; cursor: pointer; background: white; font-size: 10px; font-weight: 700; }
+
+    .offline-banner { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 11px; padding: 10px 11px; border: 1px solid #f2deb3; border-radius: 12px; color: #79531a; background: var(--amber-soft); }
+    .offline-icon { display: grid; place-items: center; width: 23px; height: 23px; flex: 0 0 auto; border-radius: 8px; color: white; background: #d79a37; font-size: 12px; font-weight: 800; }
+    .offline-banner strong { display: block; font-size: 10px; }
+    .offline-banner span { display: block; margin-top: 3px; font-size: 9px; line-height: 1.45; }
+
+    .toast { position: absolute; z-index: 20; left: 50%; bottom: 75px; transform: translate(-50%, 14px); max-width: 430px; padding: 11px 14px; border-radius: 11px; color: white; background: rgba(28,34,48,.93); box-shadow: 0 10px 28px rgba(20,25,40,.25); opacity: 0; pointer-events: none; font-size: 11px; transition: .22s ease; }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+    .prototype-note { position: absolute; right: 24px; top: 24px; z-index: 3; width: 220px; padding: 12px 14px; border: 1px solid rgba(255,255,255,.66); border-radius: 13px; color: rgba(35,43,60,.72); background: rgba(255,255,255,.55); backdrop-filter: blur(16px); font-size: 10px; line-height: 1.55; }
+
+    .view { display: none; }
+    .view.active { display: block; }
+  </style>
+</head>
+<body>
+  <main class="prototype-shell">
+    <aside class="sidebar">
+      <div class="brand-line">
+        <div class="brand-mark">T</div>
+        <div><h1>悬浮消息窗原型</h1><p class="sub">TransportHub · 一体化方案</p></div>
+      </div>
+      <div class="demo-badge"><span class="demo-dot"></span>演示模式，不会传输真实资料</div>
+
+      <div class="side-label">界面状态</div>
+      <div class="state-list">
+        <button class="state-button active" data-state="main">消息与文件一体</button>
+        <button class="state-button" data-state="collapsed">折叠成悬浮按钮</button>
+        <button class="state-button" data-state="empty">尚未配对</button>
+        <button class="state-button" data-state="offline">同步服务离线</button>
+      </div>
+
+      <div class="side-label">默认设计</div>
+      <ol class="decision-list">
+        <li>单击文字气泡复制全文</li>
+        <li>单击文件卡片只定位文件</li>
+        <li>拖拽、粘贴图片都立即投递</li>
+        <li>消息区更大，周边控件更紧凑</li>
+      </ol>
+
+      <div class="sidebar-footer">点击左侧状态切换界面。可在原型中点击文字测试复制；拖放、粘贴图片或链接只做界面演示，不保存、不上传。</div>
+    </aside>
+
+    <section class="stage" id="stage">
+      <div class="stage-top"><p class="stage-title">Windows 桌面悬浮效果</p><p class="stage-help">窗口可置顶、移动、折叠和贴边</p></div>
+      <div class="prototype-note"><strong>交互提示</strong><br />单击文字复制；单击文件模拟定位；在窗口内粘贴图片或网址，会立即加入演示时间线。</div>
+
+      <section class="widget" id="widget" aria-label="TransportHub 投递窗原型">
+        <header class="titlebar" id="titlebar">
+          <div class="app-icon">T<span class="floating-badge">3</span></div>
+          <div class="brand-copy"><div class="title">全部电脑</div><div class="caption">消息、图片和文件自动同步</div></div>
+          <div class="online-chip full-only" id="onlineChip"><span class="status-dot"></span><span id="onlineText">3 台在线</span></div>
+          <div class="window-actions">
+            <button class="icon-button pinned full-only" data-demo="置顶已开启" title="保持置顶">●</button>
+            <button class="icon-button full-only" id="collapseButton" title="折叠成悬浮按钮">◉</button>
+            <button class="icon-button full-only" data-demo="正式版将隐藏到系统托盘" title="隐藏到托盘">×</button>
+          </div>
+        </header>
+
+        <div class="widget-body">
+          <div class="content">
+            <div class="view messages-view active" data-view="main">
+              <div class="conversation-head"><strong>消息与文件</strong><span>3 在线 / 4 台 · 目录最新</span></div>
+              <div class="unified-hint"><span>拖文件或 Ctrl+V 粘贴图片/链接立即发送</span><strong>置顶</strong></div>
+              <div class="chat-timeline" id="messageList">
+                <div class="day-divider">今天</div>
+                <div class="message-row incoming">
+                  <div class="sender-name">PC-OFFICE · 13:48</div>
+                  <div class="message-bubble copyable" data-copy="客户反馈已经汇总好了，更新后的表格在下面。" title="单击复制全文">客户反馈已经汇总好了，更新后的表格在下面。</div>
+                </div>
+                <div class="message-row incoming">
+                  <div class="sender-name">PC-OFFICE · 13:49</div>
+                  <div class="file-bubble" data-file="客户反馈汇总.xlsx" title="打开文件夹并选中文件"><div class="file-icon">XLSX</div><div class="file-info"><div class="file-name">客户反馈汇总.xlsx</div><div class="file-meta">3.2 MB · 单击定位文件</div></div><div class="file-arrow">›</div></div>
+                </div>
+                <div class="message-row outgoing">
+                  <div class="message-bubble copyable" data-copy="收到。我今晚再检查一次，明天上午测试大文件断点恢复。" title="单击复制全文">收到。我今晚再检查一次，明天上午测试大文件断点恢复。</div>
+                  <div class="message-meta delivered">13:52 · 已送达 2/3 台</div>
+                </div>
+                <div class="message-row outgoing">
+                  <div class="image-bubble" data-file="微信图片-20260812-1353.png" title="打开文件夹并选中图片"><div class="image-preview"></div><div class="image-caption"><strong>微信图片.png</strong><span>1.8 MB · 单击定位</span></div></div>
+                  <div class="message-meta delivered">13:53 · 粘贴后立即发送 · 已送达 3/3 台</div>
+                </div>
+                <div class="message-row incoming">
+                  <div class="sender-name">LAPTOP-HOME · 13:55</div>
+                  <div class="message-bubble copyable" data-copy="好的，离线的那台电脑上线后也会自动补收吗？" title="单击复制全文">好的，离线的那台电脑上线后也会自动补收吗？</div>
+                </div>
+                <div class="message-row incoming">
+                  <div class="sender-name">LAPTOP-HOME · 13:56</div>
+                  <div class="link-bubble" data-link="https://images.example.com/design-preview.webp" title="图片链接"><div class="link-symbol">↗</div><div><div class="link-title">图片链接 · design-preview.webp</div><div class="link-url">https://images.example.com/design-preview.webp</div></div></div>
+                </div>
+              </div>
+              <div class="chat-composer">
+                <div class="chat-input-row">
+                  <button class="attach-button" data-demo="选择文件或文件夹并加入当前时间线" aria-label="添加附件" title="添加附件">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.4 11.1-8.9 8.8a6 6 0 0 1-8.5-8.5l9.2-9.1a4 4 0 0 1 5.6 5.6l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
+                  </button>
+                  <textarea id="messageInput" placeholder="输入消息…" aria-label="输入消息"></textarea>
+                  <button class="send-icon-button" id="sendTextButton" aria-label="发送消息" title="发送">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13"/><path d="m13 6 6 6-6 6"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="view" data-view="empty">
+              <div class="empty-state">
+                <div class="empty-visual"><div class="device-card"><div class="device-screen"></div><div class="device-line"></div></div><div class="device-card"><div class="device-screen"></div><div class="device-line"></div></div></div>
+                <h2>还没有连接其他电脑</h2>
+                <p>先完成一次设备配对。配对完成后，以后打开电脑就会自动发现和连接。</p>
+                <button class="primary-button" data-demo="正式版将打开 Syncthing 配对页面">打开配对页面</button>
+                <button class="secondary-button" data-demo="当前电脑 ID 会在这里显示" style="margin-top:8px">查看本机设备 ID</button>
+              </div>
+            </div>
+
+            <div class="view" data-view="offline">
+              <div class="offline-banner"><div class="offline-icon">!</div><div><strong>同步服务当前未运行</strong><span>资料仍可保存到本机；Syncthing 恢复后会自动继续同步。</span></div></div>
+              <div class="target-row"><div class="target-main">暂存到 <strong>本机投递目录</strong></div><div class="target-count">等待服务恢复</div></div>
+              <div class="drop-zone" data-demo="原型演示：离线时仍允许本机投递">
+                <div class="drop-orbit"><div class="folder-shape"></div><div class="arrow-up">↓</div></div>
+                <div class="drop-title">拖入资料，先保存到本机</div>
+                <div class="drop-copy">同步服务恢复后自动发送</div>
+              </div>
+              <div class="section-heading"><strong>等待同步</strong><button data-demo="正式版可尝试启动同步服务">启动 Syncthing</button></div>
+              <div class="activity-list">
+                <div class="activity"><div class="file-icon text">TXT</div><div class="file-info"><div class="file-name">会议纪要.txt</div><div class="file-meta">已保存到本机 · 15:08</div></div><div class="state-chip waiting">等待同步</div></div>
+              </div>
+            </div>
+          </div>
+          <footer class="footerbar"><div class="footer-status"><span class="status-dot"></span><span id="footerStatus">Syncthing 在线 · 目录最新</span></div><button class="footer-link" data-demo="正式版将在资源管理器中打开同步目录">打开目录</button></footer>
+        </div>
+      </section>
+
+      <div class="toast" id="toast">这是无功能原型</div>
+      <div class="taskbar"><div class="taskbar-icons"><div class="task-icon"></div><div class="task-icon"></div><div class="task-icon"></div><div class="task-icon"></div></div></div>
+    </section>
+  </main>
+
+  <script>
+    const widget = document.getElementById('widget');
+    const buttons = [...document.querySelectorAll('.state-button')];
+    const views = [...document.querySelectorAll('.view')];
+    const toast = document.getElementById('toast');
+    const collapseButton = document.getElementById('collapseButton');
+    const onlineChip = document.getElementById('onlineChip');
+    const onlineText = document.getElementById('onlineText');
+    const footerStatus = document.getElementById('footerStatus');
+    let toastTimer;
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+    }
+
+    function showState(state) {
+      widget.classList.toggle('collapsed', state === 'collapsed');
+      collapseButton.style.display = state === 'collapsed' ? 'none' : '';
+      buttons.forEach(button => button.classList.toggle('active', button.dataset.state === state));
+      const viewName = state === 'collapsed' ? 'main' : state;
+      views.forEach(view => view.classList.toggle('active', view.dataset.view === viewName));
+      const offline = state === 'offline';
+      const empty = state === 'empty';
+      onlineChip.classList.toggle('offline', offline || empty);
+      onlineText.textContent = offline ? '服务离线' : empty ? '未配对' : '3 台在线';
+      footerStatus.textContent = offline ? 'Syncthing 未运行' : empty ? '等待添加设备' : 'Syncthing 已连接';
+    }
+
+    buttons.forEach(button => button.addEventListener('click', () => showState(button.dataset.state)));
+    collapseButton.addEventListener('click', () => showState('collapsed'));
+    document.getElementById('titlebar').addEventListener('click', () => { if (widget.classList.contains('collapsed')) showState('main'); });
+
+    document.querySelectorAll('[data-demo]').forEach(element => element.addEventListener('click', () => showToast(element.dataset.demo + '（仅原型，不执行）')));
+
+    ['dragenter', 'dragover'].forEach(name => widget.addEventListener(name, event => { event.preventDefault(); widget.classList.add('dragging'); }));
+    ['dragleave', 'drop'].forEach(name => widget.addEventListener(name, event => { event.preventDefault(); widget.classList.remove('dragging'); }));
+    widget.addEventListener('drop', event => {
+      const count = event.dataTransfer && event.dataTransfer.files ? event.dataTransfer.files.length : 0;
+      showToast(count ? `已模拟从${widget.classList.contains('collapsed') ? '悬浮按钮' : '窗口'}投递 ${count} 项；未读取文件内容` : '已模拟拖放；没有真实传输');
+    });
+
+    function copyText(value, successMessage = '已复制文字') {
+      const fallbackCopy = () => {
+        const helper = document.createElement('textarea');
+        helper.value = value;
+        helper.style.position = 'fixed';
+        helper.style.opacity = '0';
+        document.body.append(helper);
+        helper.select();
+        document.execCommand('copy');
+        helper.remove();
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(value).catch(fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
+      showToast(successMessage + '（原型）');
+    }
+
+    document.getElementById('messageList').addEventListener('click', event => {
+      const copyable = event.target.closest('[data-copy]');
+      if (copyable) {
+        const selection = window.getSelection && window.getSelection().toString();
+        if (!selection) copyText(copyable.dataset.copy);
+        return;
+      }
+      const localItem = event.target.closest('[data-file]');
+      if (localItem) {
+        showToast(`正式版将打开文件夹并选中：${localItem.dataset.file}`);
+        return;
+      }
+      const linkItem = event.target.closest('[data-link]');
+      if (linkItem) copyText(linkItem.dataset.link, '已复制图片链接');
+    });
+
+    function appendPastedImageDemo() {
+      const row = document.createElement('div');
+      row.className = 'message-row outgoing';
+      row.innerHTML = `<div class="image-bubble" data-file="粘贴图片-演示.png" title="打开文件夹并选中图片"><div class="image-preview"></div><div class="image-caption"><strong>粘贴图片-刚刚.png</strong><span>图片 · 立即投递</span></div></div><div class="message-meta">刚刚 · 已保存本机，等待同步</div>`;
+      document.getElementById('messageList').append(row);
+      row.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      showToast('检测到剪贴板图片，已模拟立即发送；原型未读取或保存图片内容');
+    }
+
+    function appendPastedLinkDemo(url) {
+      const row = document.createElement('div');
+      row.className = 'message-row outgoing';
+      const card = document.createElement('div');
+      card.className = 'link-bubble';
+      card.dataset.link = url;
+      card.title = '单击复制图片链接';
+      const symbol = document.createElement('div');
+      symbol.className = 'link-symbol';
+      symbol.textContent = '↗';
+      const detail = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'link-title';
+      title.textContent = '粘贴的图片链接';
+      const address = document.createElement('div');
+      address.className = 'link-url';
+      address.textContent = url;
+      detail.append(title, address);
+      card.append(symbol, detail);
+      const meta = document.createElement('div');
+      meta.className = 'message-meta';
+      meta.textContent = '刚刚 · 链接已立即投递，未下载远程图片';
+      row.append(card, meta);
+      document.getElementById('messageList').append(row);
+      row.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      showToast('已模拟立即发送图片链接；不会自动下载远程内容');
+    }
+
+    function isSingleWebUrl(value) {
+      if (!value || /\s/.test(value)) return false;
+      try {
+        const parsed = new URL(value);
+        return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+      } catch { return false; }
+    }
+
+    document.addEventListener('paste', event => {
+      if (widget.classList.contains('collapsed') || !event.clipboardData) return;
+      const items = [...event.clipboardData.items];
+      if (items.some(item => item.kind === 'file' && item.type.startsWith('image/'))) {
+        event.preventDefault();
+        appendPastedImageDemo();
+        return;
+      }
+      const text = event.clipboardData.getData('text/plain').trim();
+      if (isSingleWebUrl(text)) {
+        event.preventDefault();
+        appendPastedLinkDemo(text);
+      }
+    });
+
+    function sendTextDemo() {
+      const input = document.getElementById('messageInput');
+      const value = input.value.trim();
+      if (!value) { showToast('请先输入演示文字'); return; }
+      const row = document.createElement('div');
+      row.className = 'message-row outgoing';
+      row.innerHTML = `<div class="message-bubble copyable" title="单击复制全文"></div><div class="message-meta">刚刚 · 等待同步</div>`;
+      const bubble = row.querySelector('.message-bubble');
+      bubble.textContent = value;
+      bubble.dataset.copy = value;
+      document.getElementById('messageList').append(row);
+      input.value = '';
+      row.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      showToast('已加入原型消息框；没有生成或同步真实消息文件');
+    }
+    document.getElementById('sendTextButton').addEventListener('click', sendTextDemo);
+    document.getElementById('messageInput').addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendTextDemo();
+      }
+    });
+  </script>
+</body>
+</html>

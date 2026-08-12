@@ -1,0 +1,38 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build Release
+        shell: powershell
+        run: .\scripts\build-desktop.ps1 -Configuration Release
+
+      - name: Run self-tests
+        shell: powershell
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'TransportHub-self-test.log'
+          $env:TRANSPORTHUB_SELF_TEST_LOG = $log
+          $process = Start-Process `
+            -FilePath .\artifacts\TransportHub.Desktop\TransportHub.exe `
+            -ArgumentList '--self-test' `
+            -Wait -PassThru
+          if (Test-Path -LiteralPath $log) {
+            Get-Content -LiteralPath $log
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "TransportHub self-tests failed with exit code $($process.ExitCode)."
+          }
