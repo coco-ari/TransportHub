@@ -7,6 +7,8 @@ Thank you for helping improve TransportHub.
 You need Windows 10/11, PowerShell 5.1 or later, Visual Studio 2022 or later Build Tools
 with the C# compiler, and the .NET Framework 4.8 Developer Pack.
 
+Building the distributable installer additionally requires Inno Setup 6.7.3.
+
 Build and run the self-tests from the repository root:
 
 ```powershell
@@ -20,6 +22,12 @@ $process = Start-Process `
   -Wait -PassThru
 Get-Content -LiteralPath $log
 if ($process.ExitCode -ne 0) { throw "Self-tests failed: $($process.ExitCode)" }
+```
+
+Build the one-click Windows installer with:
+
+```powershell
+& .\scripts\package-release.ps1 -Version 0.1.0
 ```
 
 ## Pull requests

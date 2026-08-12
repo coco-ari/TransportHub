@@ -90,12 +90,67 @@ function Stop-InstalledTransportHub {
     }
 }
 
+function Remove-TransportHubShortcut {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $ShortcutPath,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedParent,
+
+        [Parameter(Mandatory)]
+        [string] $ExecutablePath
+    )
+
+    if (-not (Test-PathIsInside -Candidate $ShortcutPath -Parent $ExpectedParent)) {
+        throw "Refusing to remove a shortcut outside its expected directory: $ShortcutPath"
+    }
+    if (-not (Test-Path -LiteralPath $ShortcutPath -PathType Leaf)) {
+        return $false
+    }
+    $shortcutItem = Get-Item -LiteralPath $ShortcutPath -Force
+    if (($shortcutItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Write-Warning "A reparse-point shortcut was preserved: $ShortcutPath"
+        return $false
+    }
+
+    $shell = $null
+    $shortcut = $null
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($ShortcutPath)
+        if (-not [string]::Equals((Resolve-NormalizedPath -Path $shortcut.TargetPath),
+                (Resolve-NormalizedPath -Path $ExecutablePath), [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Warning "A shortcut named TransportHub points elsewhere and was preserved: $ShortcutPath"
+            return $false
+        }
+    }
+    catch {
+        Write-Warning "Could not verify the shortcut target; it was preserved: $ShortcutPath"
+        return $false
+    }
+    finally {
+        if ($null -ne $shortcut) {
+            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) | Out-Null
+        }
+        if ($null -ne $shell) {
+            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) | Out-Null
+        }
+    }
+
+    Remove-Item -LiteralPath $ShortcutPath -Force
+    return $true
+}
+
 $localApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 $roamingApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
 $userProfileDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+$desktopDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
 if ([string]::IsNullOrWhiteSpace($localApplicationData) -or
     [string]::IsNullOrWhiteSpace($roamingApplicationData) -or
-    [string]::IsNullOrWhiteSpace($userProfileDirectory)) {
+    [string]::IsNullOrWhiteSpace($userProfileDirectory) -or
+    [string]::IsNullOrWhiteSpace($desktopDirectory)) {
     throw 'The current user profile folders could not be resolved.'
 }
 
@@ -109,6 +164,8 @@ $startMenuProgramsDirectory = Resolve-NormalizedPath -Path (Join-Path -Path $roa
         -ChildPath 'Microsoft\Windows\Start Menu\Programs')
 $startMenuDirectory = Resolve-NormalizedPath -Path (Join-Path -Path $startMenuProgramsDirectory -ChildPath 'TransportHub')
 $shortcutPath = Join-Path -Path $startMenuDirectory -ChildPath 'TransportHub.lnk'
+$desktopDirectory = Resolve-NormalizedPath -Path $desktopDirectory
+$desktopShortcutPath = Join-Path -Path $desktopDirectory -ChildPath 'TransportHub.lnk'
 $syncthingConfigDirectory = Join-Path -Path $localApplicationData -ChildPath 'Syncthing'
 $synchronizedDataDirectory = Join-Path -Path $userProfileDirectory -ChildPath 'TransportHub'
 
@@ -166,24 +223,10 @@ if (Test-Path -LiteralPath $runKeyPath) {
     }
 }
 
-if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
-    $removeShortcut = $false
-    try {
-        $shell = New-Object -ComObject WScript.Shell
-        $shortcut = $shell.CreateShortcut($shortcutPath)
-        $removeShortcut = [string]::Equals((Resolve-NormalizedPath -Path $shortcut.TargetPath),
-            (Resolve-NormalizedPath -Path $installedExecutable), [StringComparison]::OrdinalIgnoreCase)
-        [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) | Out-Null
-        [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) | Out-Null
-    }
-    catch {
-        Write-Warning "Could not verify the Start Menu shortcut target; it was preserved: $shortcutPath"
-    }
-
-    if ($removeShortcut) {
-        Remove-Item -LiteralPath $shortcutPath -Force
-    }
-}
+$startMenuShortcutRemoved = Remove-TransportHubShortcut -ShortcutPath $shortcutPath `
+    -ExpectedParent $startMenuProgramsDirectory -ExecutablePath $installedExecutable
+$desktopShortcutRemoved = Remove-TransportHubShortcut -ShortcutPath $desktopShortcutPath `
+    -ExpectedParent $desktopDirectory -ExecutablePath $installedExecutable
 
 $installedRelativeFiles = @()
 if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
@@ -249,6 +292,8 @@ Write-Host "[PRESERVED] Synchronized data: $synchronizedDataDirectory"
 
 [pscustomobject] @{
     ApplicationRemoved = -not (Test-Path -LiteralPath $installedExecutable)
+    StartMenuShortcutRemoved = $startMenuShortcutRemoved
+    DesktopShortcutRemoved = $desktopShortcutRemoved
     SyncthingPreserved  = $true
     DataPreserved       = $true
 }

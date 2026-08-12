@@ -3,7 +3,22 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [switch] $NoLaunch
+    [switch] $NoLaunch,
+
+    [Parameter()]
+    [switch] $SkipDesktopShortcut,
+
+    [Parameter()]
+    [switch] $SkipSyncthingBootstrap,
+
+    [Parameter()]
+    [switch] $SkipSyncthingInstall,
+
+    [Parameter()]
+    [switch] $SkipSyncthingFirewall,
+
+    [Parameter()]
+    [switch] $SkipSyncthingAutoStart
 )
 
 Set-StrictMode -Version Latest
@@ -94,14 +109,79 @@ function Stop-InstalledTransportHub {
     }
 }
 
+function Set-TransportHubShortcut {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $ShortcutPath,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedParent,
+
+        [Parameter(Mandatory)]
+        [string] $ExecutablePath,
+
+        [Parameter(Mandatory)]
+        [string] $WorkingDirectory
+    )
+
+    if (-not (Test-PathIsInside -Candidate $ShortcutPath -Parent $ExpectedParent)) {
+        throw "Refusing to create a shortcut outside its expected directory: $ShortcutPath"
+    }
+
+    $shell = $null
+    $shortcut = $null
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        if (Test-Path -LiteralPath $ShortcutPath) {
+            if (-not (Test-Path -LiteralPath $ShortcutPath -PathType Leaf)) {
+                throw "The shortcut path is not a file: $ShortcutPath"
+            }
+            $existingShortcutItem = Get-Item -LiteralPath $ShortcutPath -Force
+            if (($existingShortcutItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Refusing to replace a reparse-point shortcut: $ShortcutPath"
+            }
+
+            $existingShortcut = $shell.CreateShortcut($ShortcutPath)
+            try {
+                if (-not [string]::Equals((Resolve-NormalizedPath -Path $existingShortcut.TargetPath),
+                        (Resolve-NormalizedPath -Path $ExecutablePath), [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "A shortcut with the same name points elsewhere and was preserved: $ShortcutPath"
+                }
+            }
+            finally {
+                [Runtime.InteropServices.Marshal]::FinalReleaseComObject($existingShortcut) | Out-Null
+            }
+        }
+
+        $shortcut = $shell.CreateShortcut($ShortcutPath)
+        $shortcut.TargetPath = $ExecutablePath
+        $shortcut.WorkingDirectory = $WorkingDirectory
+        $shortcut.Description = 'TransportHub desktop transfer window'
+        $shortcut.IconLocation = "$ExecutablePath,0"
+        $shortcut.Save()
+    }
+    finally {
+        if ($null -ne $shortcut) {
+            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) | Out-Null
+        }
+        if ($null -ne $shell) {
+            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) | Out-Null
+        }
+    }
+}
+
 $repositoryRoot = Resolve-NormalizedPath -Path (Join-Path -Path $PSScriptRoot -ChildPath '..')
 $artifactDirectory = Resolve-NormalizedPath -Path (Join-Path -Path $repositoryRoot -ChildPath 'artifacts\TransportHub.Desktop')
 $artifactExecutable = Join-Path -Path $artifactDirectory -ChildPath 'TransportHub.exe'
+$bootstrapScriptPath = Resolve-NormalizedPath -Path (Join-Path -Path $PSScriptRoot -ChildPath 'bootstrap.ps1')
 $localApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 $roamingApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+$desktopDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
 if ([string]::IsNullOrWhiteSpace($localApplicationData) -or
-    [string]::IsNullOrWhiteSpace($roamingApplicationData)) {
-    throw 'The current user LocalAppData and AppData folders could not be resolved.'
+    [string]::IsNullOrWhiteSpace($roamingApplicationData) -or
+    [string]::IsNullOrWhiteSpace($desktopDirectory)) {
+    throw 'The current user LocalAppData, AppData, and Desktop folders could not be resolved.'
 }
 
 $programsDirectory = Resolve-NormalizedPath -Path (Join-Path -Path $localApplicationData -ChildPath 'Programs')
@@ -114,6 +194,8 @@ $startMenuProgramsDirectory = Resolve-NormalizedPath -Path (Join-Path -Path $roa
         -ChildPath 'Microsoft\Windows\Start Menu\Programs')
 $startMenuDirectory = Resolve-NormalizedPath -Path (Join-Path -Path $startMenuProgramsDirectory -ChildPath 'TransportHub')
 $shortcutPath = Join-Path -Path $startMenuDirectory -ChildPath 'TransportHub.lnk'
+$desktopDirectory = Resolve-NormalizedPath -Path $desktopDirectory
+$desktopShortcutPath = Join-Path -Path $desktopDirectory -ChildPath 'TransportHub.lnk'
 
 if (-not (Test-Path -LiteralPath $artifactExecutable -PathType Leaf)) {
     throw "Desktop artifact not found: $artifactExecutable. Run scripts\build-desktop.ps1 first."
@@ -152,6 +234,10 @@ if (Test-Path -LiteralPath $startMenuDirectory) {
     }
 }
 
+if (-not (Test-PathIsInside -Candidate $desktopShortcutPath -Parent $desktopDirectory)) {
+    throw "Refusing to create a shortcut outside the current user's Desktop: $desktopShortcutPath"
+}
+
 $artifactItems = @(Get-ChildItem -LiteralPath $artifactDirectory -Force -Recurse)
 $artifactReparsePoints = @($artifactItems |
         Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
@@ -163,22 +249,51 @@ $artifactPrefix = $artifactDirectory.TrimEnd([char[]] @(
         [IO.Path]::DirectorySeparatorChar,
         [IO.Path]::AltDirectorySeparatorChar
     )) + [IO.Path]::DirectorySeparatorChar
-$expectedArtifactNames = @(
+$allowedArtifactNames = @(
     'TransportHub.exe',
     'TransportHub.exe.config',
     'TransportHub.pdb'
 )
-$artifactFiles = @($artifactItems | Where-Object {
-        -not $_.PSIsContainer -and
-        $expectedArtifactNames -contains $_.Name -and
-        [string]::Equals($_.DirectoryName, $artifactDirectory, [StringComparison]::OrdinalIgnoreCase)
+$unexpectedArtifactItems = @($artifactItems | Where-Object {
+        $_.PSIsContainer -or
+        $allowedArtifactNames -notcontains $_.Name -or
+        -not [string]::Equals($_.DirectoryName, $artifactDirectory, [StringComparison]::OrdinalIgnoreCase)
     })
-foreach ($expectedArtifactName in $expectedArtifactNames) {
+if ($unexpectedArtifactItems.Count -gt 0) {
+    throw "Unexpected item in the desktop artifact directory: $($unexpectedArtifactItems[0].FullName)"
+}
+
+$artifactFiles = @($artifactItems | Where-Object { -not $_.PSIsContainer })
+$requiredArtifactNames = @(
+    'TransportHub.exe',
+    'TransportHub.exe.config'
+)
+foreach ($expectedArtifactName in $requiredArtifactNames) {
     if (-not @($artifactFiles | Where-Object {
                 [string]::Equals($_.Name, $expectedArtifactName, [StringComparison]::OrdinalIgnoreCase)
             }).Count) {
         throw "Required desktop artifact not found: $(Join-Path -Path $artifactDirectory -ChildPath $expectedArtifactName)"
     }
+}
+
+$syncthingBootstrapResult = $null
+if (-not $SkipSyncthingBootstrap) {
+    if (-not (Test-Path -LiteralPath $bootstrapScriptPath -PathType Leaf)) {
+        throw "Syncthing bootstrap script not found: $bootstrapScriptPath. Use -SkipSyncthingBootstrap only when Syncthing is already configured."
+    }
+
+    $bootstrapArguments = @{}
+    if ($SkipSyncthingInstall) {
+        $bootstrapArguments['SkipInstall'] = $true
+    }
+    if ($SkipSyncthingFirewall) {
+        $bootstrapArguments['SkipFirewall'] = $true
+    }
+    if ($SkipSyncthingAutoStart) {
+        $bootstrapArguments['SkipAutoStart'] = $true
+    }
+
+    $syncthingBootstrapResult = & $bootstrapScriptPath @bootstrapArguments
 }
 
 $newRelativeFiles = New-Object 'System.Collections.Generic.List[string]'
@@ -241,15 +356,13 @@ New-ItemProperty -Path $runKeyPath -Name $runValueName -Value $runCommand `
     -PropertyType String -Force | Out-Null
 
 New-Item -ItemType Directory -Path $startMenuDirectory -Force | Out-Null
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $installedExecutable
-$shortcut.WorkingDirectory = $installDirectory
-$shortcut.Description = 'TransportHub desktop transfer window'
-$shortcut.IconLocation = "$installedExecutable,0"
-$shortcut.Save()
-[Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) | Out-Null
-[Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) | Out-Null
+Set-TransportHubShortcut -ShortcutPath $shortcutPath -ExpectedParent $startMenuProgramsDirectory `
+    -ExecutablePath $installedExecutable -WorkingDirectory $installDirectory
+
+if (-not $SkipDesktopShortcut) {
+    Set-TransportHubShortcut -ShortcutPath $desktopShortcutPath -ExpectedParent $desktopDirectory `
+        -ExecutablePath $installedExecutable -WorkingDirectory $installDirectory
+}
 
 if (-not $NoLaunch) {
     Start-Process -FilePath $installedExecutable -WorkingDirectory $installDirectory | Out-Null
@@ -261,5 +374,7 @@ $installedAssembly = [Reflection.AssemblyName]::GetAssemblyName($installedExecut
     Version          = $installedAssembly.Version.ToString()
     AutoStart        = "$runKeyPath\$runValueName"
     StartMenuShortcut = $shortcutPath
+    DesktopShortcut  = if ($SkipDesktopShortcut) { $null } else { $desktopShortcutPath }
+    SyncthingBootstrap = if ($SkipSyncthingBootstrap) { 'Skipped' } else { $syncthingBootstrapResult }
     Launched         = -not $NoLaunch
 }

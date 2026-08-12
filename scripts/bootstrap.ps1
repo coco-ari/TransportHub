@@ -26,7 +26,10 @@ param(
     [switch] $SkipInstall,
 
     [Parameter()]
-    [switch] $SkipFirewall
+    [switch] $SkipFirewall,
+
+    [Parameter()]
+    [switch] $SkipAutoStart
 )
 
 Set-StrictMode -Version Latest
@@ -180,12 +183,28 @@ function Get-BillStewartInstallation {
 
         $executablePath = Join-Path -Path $normalizedDirectory -ChildPath 'syncthing.exe'
         $firewallScriptPath = Join-Path -Path $normalizedDirectory -ChildPath 'SyncthingFirewallRule.js'
+        $logonTaskScriptPath = Join-Path -Path $normalizedDirectory -ChildPath 'SyncthingLogonTask.js'
+        $controlExecutablePath = Join-Path -Path $normalizedDirectory -ChildPath 'stctl.exe'
+        $hasFirewallHelper = Test-Path -LiteralPath $firewallScriptPath -PathType Leaf
+        $hasLogonTaskHelper = (Test-Path -LiteralPath $logonTaskScriptPath -PathType Leaf) -and
+            (Test-Path -LiteralPath $controlExecutablePath -PathType Leaf)
         if ((Test-Path -LiteralPath $executablePath -PathType Leaf) -and
-            (Test-Path -LiteralPath $firewallScriptPath -PathType Leaf)) {
+            ($hasFirewallHelper -or $hasLogonTaskHelper)) {
             return [pscustomobject] @{
                 InstallDirectory = $normalizedDirectory
                 ExecutablePath   = $executablePath
-                FirewallScript   = $firewallScriptPath
+                FirewallScript   = if ($hasFirewallHelper) {
+                    $firewallScriptPath
+                }
+                else {
+                    $null
+                }
+                LogonTaskScript  = if ($hasLogonTaskHelper) {
+                    $logonTaskScriptPath
+                }
+                else {
+                    $null
+                }
                 IsBillStewart    = $true
             }
         }
@@ -332,6 +351,81 @@ function Start-AndWaitForSyncthing {
     } while ([DateTime]::UtcNow -lt $deadline)
 
     throw "Syncthing did not become ready within $TimeoutSeconds seconds."
+}
+
+function Enable-SyncthingAutoStart {
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [AllowNull()]
+        [psobject] $Installation,
+
+        [Parameter(Mandatory)]
+        [string] $ExecutablePath,
+
+        [Parameter(Mandatory)]
+        [string] $HomeDirectory
+    )
+
+    $logonTaskScript = if ($null -ne $Installation -and
+        $null -ne $Installation.PSObject.Properties['LogonTaskScript']) {
+        [string] $Installation.LogonTaskScript
+    }
+    else {
+        ''
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($logonTaskScript) -and
+        (Test-Path -LiteralPath $logonTaskScript -PathType Leaf)) {
+        $defaultHomeDirectory = Resolve-NormalizedPath -Path (Join-Path -Path $env:LOCALAPPDATA `
+                -ChildPath 'Syncthing')
+        if (-not [string]::Equals((Resolve-NormalizedPath -Path $HomeDirectory), $defaultHomeDirectory,
+                [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Syncthing Windows Setup logon startup supports its default per-user configuration directory only. Rerun with the default ConfigDirectory or -SkipAutoStart.'
+        }
+
+        $cscriptPath = Join-Path -Path $env:SystemRoot -ChildPath 'System32\cscript.exe'
+        if (-not (Test-Path -LiteralPath $cscriptPath -PathType Leaf)) {
+            throw 'Windows Script Host is required to configure Syncthing logon startup.'
+        }
+
+        # Create-or-update is intentionally unconditional: the helper replaces a
+        # stale task with the supported stctl.exe action and remains idempotent.
+        $taskCreate = Invoke-NativeCommand -FilePath $cscriptPath `
+            -ArgumentList @('//nologo', $logonTaskScript, '/create', '/silent')
+        if ($taskCreate.ExitCode -ne 0) {
+            throw "Syncthing Windows Setup could not create its logon task (exit code $($taskCreate.ExitCode))."
+        }
+
+        $taskTest = Invoke-NativeCommand -FilePath $cscriptPath `
+            -ArgumentList @('//nologo', $logonTaskScript, '/test')
+        if ($taskTest.ExitCode -ne 0) {
+            throw 'Syncthing Windows Setup logon task could not be verified after creation.'
+        }
+
+        return 'BillStewartScheduledTask'
+    }
+
+    # Portable Syncthing installations do not include the Windows Setup task
+    # helper. Use a narrowly named per-user Run value as a safe fallback. This
+    # entry remains owned by Syncthing bootstrap and is intentionally preserved
+    # when TransportHub itself is uninstalled.
+    $runKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    $runValueName = 'TransportHubSyncthing'
+    $runCommand = '"{0}" serve --home="{1}" --no-browser --no-console' -f `
+        $ExecutablePath, $HomeDirectory
+
+    New-Item -Path $runKeyPath -Force | Out-Null
+    New-ItemProperty -Path $runKeyPath -Name $runValueName -Value $runCommand `
+        -PropertyType String -Force | Out-Null
+
+    $verifiedRunValue = [string] (Get-ItemPropertyValue -LiteralPath $runKeyPath `
+            -Name $runValueName -ErrorAction Stop)
+    if (-not [string]::Equals($verifiedRunValue, $runCommand, [StringComparison]::Ordinal)) {
+        throw 'The fallback Syncthing per-user startup entry could not be verified.'
+    }
+
+    return 'CurrentUserRunValue'
 }
 
 function Get-ConfiguredFolders {
@@ -550,6 +644,14 @@ if (-not [string]::Equals($verifiedPath, $resolvedFolderPath, [StringComparison]
     throw "Folder '$FolderId' did not pass post-configuration verification."
 }
 
+$autoStartMethod = if ($SkipAutoStart) {
+    'Skipped'
+}
+else {
+    Enable-SyncthingAutoStart -Installation $installation -ExecutablePath $syncthingExecutable `
+        -HomeDirectory $resolvedConfigDirectory
+}
+
 [pscustomobject] @{
     DeviceId        = $deviceId
     FolderId        = $FolderId
@@ -563,4 +665,5 @@ if (-not [string]::Equals($verifiedPath, $resolvedFolderPath, [StringComparison]
     SyncthingVersion = $syncthingVersion
     WebGuiAddress    = $webGuiAddress
     InstalledBy     = if ($null -ne $installation) { $packageId } else { 'ExistingExecutable' }
+    AutoStartMethod = $autoStartMethod
 }

@@ -1,17 +1,17 @@
-name: Windows CI
+name: Windows Release
 
 on:
   push:
-    branches: [main]
-  pull_request:
+    tags:
+      - 'v*.*.*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build-and-test:
+  build-test-package-release:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Check out source
@@ -54,14 +54,22 @@ jobs:
             throw "Inno Setup installation failed with exit code $LASTEXITCODE."
           }
 
-      - name: Build and verify installer
+      - name: Build installer
         shell: powershell
         run: |
-          .\scripts\package-release.ps1 -Version 0.1.0
-          $setup = '.\artifacts\release\TransportHub-Setup-v0.1.0.exe'
-          $checksums = '.\artifacts\release\SHA256SUMS.txt'
-          if (-not (Test-Path -LiteralPath $setup -PathType Leaf) -or
-              -not (Test-Path -LiteralPath $checksums -PathType Leaf)) {
-            throw 'Installer packaging did not create the expected release assets.'
-          }
-          Get-Content -LiteralPath $checksums
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          .\scripts\package-release.ps1 -Version $version
+
+      - name: Publish prerelease
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          gh release create '${{ github.ref_name }}' `
+            ".\artifacts\release\TransportHub-Setup-v$version.exe" `
+            '.\artifacts\release\SHA256SUMS.txt' `
+            --verify-tag `
+            --title "TransportHub ${{ github.ref_name }} (Preview)" `
+            --notes-file '.\packaging\release-notes.md' `
+            --prerelease

@@ -14,7 +14,7 @@ TransportHub 是一个面向多台自有 Windows 电脑的轻量悬浮投递窗�
 - 点击附件卡片，在资源管理器中打开所在目录并选中文件。
 - 显示传输进度、在线设备数量和消息送达状态。
 - 支持 Syncthing 的局域网直连、公网 NAT 穿透及端到端加密中继。
-- Windows 登录自启动；卸载桌面窗不会删除 Syncthing 或同步数据。
+- TransportHub 与 Syncthing 均可在 Windows 登录后自动启动；卸载桌面窗不会删除 Syncthing 或同步数据。
 
 TransportHub 不实现独立的聊天服务器，也不会替代 Syncthing。实时音视频通话目前不在范围内。
 
@@ -34,50 +34,46 @@ Syncthing ── 局域网直连 / 公网直连 / 加密中继 ── 其他电�
 桌面端不会把 Syncthing API 密钥写入仓库或命令行。它只在本机读取 Syncthing 配置，
 并通过本机 GUI/API 获取状态。每台电脑必须保留自己独立的 Syncthing Device ID、证书和密钥。
 
+## 一键安装（推荐）
+
+打开 [GitHub Releases](https://github.com/coco-ari/TransportHub/releases)，下载并双击
+`TransportHub-Setup-v0.1.0.exe`。只需要运行这一个安装程序，无需先安装 Syncthing，
+也无需下载源码或 Visual Studio。
+
+安装程序会自动完成：
+
+- 将 TransportHub 安装到 `%LOCALAPPDATA%\Programs\TransportHub`；
+- 创建桌面图标和开始菜单快捷方式；
+- 让 TransportHub 在登录 Windows 后自动启动，并在安装完成后立即启动；
+- 如果电脑没有 Syncthing，通过 WinGet 在线安装开源的 Syncthing Windows Setup；
+- 创建 `%USERPROFILE%\TransportHub` 和 `transporthub-data` 同步文件夹；
+- 配置 90 天阶梯版本控制和 Windows 登录自启动，并尝试创建防火墙规则；
+- 保留电脑上已有的 Syncthing 设备身份、配对关系及其他文件夹配置。
+
+首次安装需要联网并具备 Windows App Installer/`winget`。配置防火墙时 Windows 可能弹出一次
+管理员确认。安装器目前尚未代码签名，因此可能显示 SmartScreen 或“未知发布者”；请只从本仓库
+Release 下载，并使用随附的 `SHA256SUMS.txt` 核验文件。
+
+安装完成后，双击桌面的 TransportHub 图标，或点击屏幕边缘的紫色 `T` 按钮。要让多台电脑
+互相同步，仍需按下文交换各自的 Syncthing Device ID；安装器不会自动信任陌生电脑。
+
+升级时直接运行新版安装程序，不需要先卸载。设备身份、同步配置、消息和文件都会保留。
+
 ## 系统要求
 
 运行环境：
 
 - Windows 10 或 Windows 11
 - PowerShell 5.1 或更新版本
-- `winget`
-- Syncthing（部署脚本可自动安装）
+- Windows App Installer（提供 `winget`）
+- .NET Framework 4.8
 
 从源码构建还需要：
 
 - Visual Studio 2022 或更高版本的 Build Tools（含 Roslyn C# 编译器）
 - .NET Framework 4.8 Developer Pack
 
-## 快速开始
-
-### 1. 安装并配置 Syncthing
-
-在 PowerShell 中运行：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
-```
-
-脚本默认执行以下操作：
-
-- 以当前用户模式安装 Syncthing Windows Setup；
-- 创建 `%USERPROFILE%\TransportHub`；
-- 配置 Folder ID `transporthub-data`；
-- 启用发送与接收及 90 天阶梯版本控制；
-- 保留已有设备身份和其他 Syncthing 配置；
-- 配置登录启动与 Windows 防火墙规则。
-
-如需使用其他数据盘：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1 `
-  -FolderPath 'D:\TransportHub' `
-  -FolderId 'transporthub-data'
-```
-
-脚本可重复运行；如果相同 Folder ID 已指向其他路径，会停止并要求人工确认。
-
-### 2. 添加其他电脑
+## 添加其他电脑
 
 在每台电脑打开 Syncthing Web GUI：
 
@@ -86,7 +82,7 @@ http://127.0.0.1:8384/
 ```
 
 通过“操作 → 显示 ID”获取 Device ID，并通过可信渠道交换。双方都需要添加对方并共享
-`transporthub-data`。也可以在双方分别运行：
+`transporthub-data`。从源码仓库操作时，也可以在双方分别运行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\add-peer.ps1 `
@@ -96,7 +92,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\add-peer.ps1 `
 
 推荐使用一台长期在线电脑作为中心节点：中心添加所有普通节点，普通节点只添加中心。
 
-### 3. 构建并安装悬浮窗
+## 从源码构建（开发者）
+
+先安装并配置 Syncthing：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
+```
+
+如需使用其他数据盘，可传入 `-FolderPath 'D:\TransportHub'`。脚本可重复运行，并会保留已有
+设备身份及其他 Syncthing 配置。
+
+然后构建并安装桌面端：
 
 ```powershell
 & .\scripts\build-desktop.ps1 -Configuration Release
@@ -104,8 +111,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\add-peer.ps1 `
 & .\scripts\install-desktop.ps1
 ```
 
-安装位置为 `%LOCALAPPDATA%\Programs\TransportHub`。安装脚本会创建当前用户登录启动项和
-开始菜单快捷方式，重复运行可安全升级。
+源码安装脚本同样会创建桌面图标、开始菜单快捷方式和当前用户登录启动项，并默认完成
+Syncthing 安装、配置与登录自启动；重复运行可安全升级。
 
 卸载桌面窗：
 
@@ -115,7 +122,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\add-peer.ps1 `
 
 卸载脚本不会删除 Syncthing、Syncthing 配置或 `%USERPROFILE%\TransportHub` 中的数据。
 
-### 4. 验证
+验证：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
@@ -137,6 +144,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1 `
 - 在窗口中按 Ctrl+V 可发送剪贴板图片、文件或单独的 HTTP(S) 链接。
 - 点击已到达的附件卡片会打开资源管理器并定位文件。
 - 点击标题栏 `—` 折叠到屏幕边缘，点击 `×` 隐藏到系统托盘。
+
+## 卸载
+
+在“Windows 设置 → 应用 → 已安装的应用”中卸载 TransportHub。卸载会移除 TransportHub、
+桌面/开始菜单快捷方式及 TransportHub 自启动项，但会保留：
+
+- Syncthing 及其登录自启动任务；
+- `%LOCALAPPDATA%\Syncthing` 中的设备身份与配置；
+- `%USERPROFILE%\TransportHub` 中的消息和文件。
+
+这是为了避免误删或失去同步资料。如确实要彻底移除 Syncthing，请另行从 Windows 设置中卸载；
+同步数据目录只能在确认已有备份后手动删除。
 
 ## 仓库结构
 
@@ -173,7 +192,7 @@ prototype/                   早期交互原型
 - 当前仅支持 Windows。
 - 所有共享成员必须彼此可信。
 - 文字与附件依赖 Syncthing 最终一致性，不是实时聊天服务。
-- 尚无自动更新、代码签名或官方安装包。
+- 预览版安装器尚未代码签名，也没有自动更新。
 - 实时音视频通话尚未实现。
 
 ## 开发与测试
@@ -193,3 +212,4 @@ prototype/                   早期交互原型
 [MIT](LICENSE)
 
 Syncthing 是独立项目，使用其自己的许可证。TransportHub 不包含 Syncthing 二进制文件。
+一键安装器会在安装时通过 WinGet 获取开源的 Bill Stewart Syncthing Windows Setup。
