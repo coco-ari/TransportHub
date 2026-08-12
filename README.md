@@ -45,7 +45,7 @@ Syncthing ── 局域网直连 / 公网直连 / 加密中继 ── 其他电�
 
 从源码构建还需要：
 
-- Visual Studio 2022 Build Tools（含 Roslyn C# 编译器）
+- Visual Studio 2022 或更高版本的 Build Tools（含 Roslyn C# 编译器）
 - .NET Framework 4.8 Developer Pack
 
 ## 快速开始
@@ -178,7 +178,7 @@ prototype/                   早期交互原型
 
 ## 开发与测试
 
-构建脚本会调用 Visual Studio 2022 的 Roslyn 编译器，并将输出写入 `artifacts/`：
+构建脚本会调用 Visual Studio 2022 或更高版本的 Roslyn 编译器，并将输出写入 `artifacts/`：
 
 ```powershell
 & .\scripts\build-desktop.ps1 -Configuration Debug

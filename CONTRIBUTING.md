@@ -4,7 +4,7 @@ Thank you for helping improve TransportHub.
 
 ## Development setup
 
-You need Windows 10/11, PowerShell 5.1 or later, Visual Studio 2022 Build Tools
+You need Windows 10/11, PowerShell 5.1 or later, Visual Studio 2022 or later Build Tools
 with the C# compiler, and the .NET Framework 4.8 Developer Pack.
 
 Build and run the self-tests from the repository root:

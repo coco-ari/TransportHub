@@ -81,7 +81,7 @@ function Resolve-RoslynCompiler {
     $programFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
     $vsWherePath = Join-Path -Path $programFilesX86 -ChildPath 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (Test-Path -LiteralPath $vsWherePath -PathType Leaf) {
-        $vsWhereOutput = @(& $vsWherePath -latest -products '*' -version '[17.0,18.0)' `
+        $vsWhereOutput = @(& $vsWherePath -latest -products '*' -version '[17.0,)' `
                 -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\Roslyn\csc.exe' 2>$null)
         foreach ($resultPath in $vsWhereOutput) {
             if (-not [string]::IsNullOrWhiteSpace([string] $resultPath)) {
@@ -101,7 +101,7 @@ function Resolve-RoslynCompiler {
         }
     }
 
-    throw 'VS2022 Roslyn csc.exe was not found. Install the Visual Studio 2022 MSBuild/C# build tools or pass -CompilerPath.'
+    throw 'A Visual Studio 2022 or later Roslyn csc.exe was not found. Install the MSBuild/C# build tools or pass -CompilerPath.'
 }
 
 $repositoryRoot = Resolve-NormalizedPath -Path (Join-Path -Path $PSScriptRoot -ChildPath '..')
