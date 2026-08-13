@@ -48,6 +48,7 @@ namespace TransportHub.Desktop.Forms
         private string _timelineSignature = String.Empty;
         private string _lastNetworkDetail = "正在连接 Syncthing";
         private bool _initialTimelineLoad = true;
+        private bool _showOnlineBadge;
         private bool _allowClose;
         private bool _shuttingDown;
         private bool _resourcesDisposed;
@@ -158,13 +159,36 @@ namespace TransportHub.Desktop.Forms
             {
                 hide.Left = Math.Max(0, header.ClientSize.Width - ScaleValue(34));
                 collapse.Left = Math.Max(0, hide.Left - ScaleValue(30));
-                var statusRight = collapse.Left - ScaleValue(6);
-                if (_onlineLabel.Visible)
+                hide.Top = Math.Max(0, (header.ClientSize.Height - hide.Height) / 2);
+                collapse.Top = Math.Max(0, (header.ClientSize.Height - collapse.Height) / 2);
+
+                // Keep the initially hidden badge in its final horizontal slot.
+                // Making it visible must never flash over the title at (0, 0).
+                _onlineLabel.Left = Math.Max(0, collapse.Left - ScaleValue(61));
+                _onlineLabel.Top = Math.Max(0, (header.ClientSize.Height - _onlineLabel.Height) / 2);
+
+                title.Left = ScaleValue(12);
+                title.Top = ScaleValue(4);
+                _statusLabel.Top = title.Bottom - ScaleValue(1);
+                _statusLabel.Height = Math.Max(
+                    ScaleValue(17),
+                    TextRenderer.MeasureText(
+                        "国Ag",
+                        _statusLabel.Font,
+                        Size.Empty,
+                        TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Height + ScaleValue(2));
+                var requiredHeaderHeight = _statusLabel.Bottom + ScaleValue(4);
+                if (header.Height != requiredHeaderHeight)
                 {
-                    _onlineLabel.Left = Math.Max(0, collapse.Left - ScaleValue(61));
+                    header.Height = requiredHeaderHeight;
+                }
+
+                var statusRight = collapse.Left - ScaleValue(6);
+                if (_showOnlineBadge)
+                {
                     statusRight = _onlineLabel.Left - ScaleValue(7);
                 }
-                _statusLabel.Width = Math.Max(ScaleValue(72), statusRight - _statusLabel.Left);
+                _statusLabel.Width = Math.Max(ScaleValue(40), statusRight - _statusLabel.Left);
             };
             header.Resize += delegate { _layoutHeader(); };
             _layoutHeader();
@@ -641,9 +665,15 @@ namespace TransportHub.Desktop.Forms
                         incomingTransfers.Remove(relativePath.Replace('\\', '/'));
                     }
                 }
+                var attachmentProgress = ResolveAttachmentStatus(
+                    message.Attachment != null,
+                    absolutePath != null,
+                    incomingTransfer == null ? null : BuildIncomingProgress(incomingTransfer),
+                    _statusService.Current.Running,
+                    _statusService.Current.FolderIdle);
                 signatureParts.Add("attachment:" + message.Id + ":" +
-                    (absolutePath == null ? "pending" : "available") + ":" +
-                    (incomingTransfer == null ? "-" : incomingTransfer.Percent.ToString()));
+                    (absolutePath == null ? "missing" : "available") + ":" +
+                    (attachmentProgress ?? "-"));
 
                 viewModels.Add(new TimelineItemViewModel
                 {
@@ -657,9 +687,7 @@ namespace TransportHub.Desktop.Forms
                     AbsolutePath = absolutePath,
                     MimeType = mimeType,
                     SizeBytes = size,
-                    AttachmentProgress = incomingTransfer == null
-                        ? null
-                        : BuildIncomingProgress(incomingTransfer),
+                    AttachmentProgress = attachmentProgress,
                     Timestamp = message.CreatedUtc.ToLocalTime(),
                     DeliverySummary = delivery
                 });
@@ -742,7 +770,9 @@ namespace TransportHub.Desktop.Forms
                     _timeline.Controls.Add(new Panel
                     {
                         BackColor = Theme.Surface,
-                        Height = ScaleValue(14),
+                        // Keep the last timestamp above the bottom composer even
+                        // when Windows text scaling makes the metadata line taller.
+                        Height = ScaleValue(24),
                         Width = TimelineContentWidth(),
                         Margin = new Padding(0),
                         TabStop = false
@@ -1519,26 +1549,31 @@ namespace TransportHub.Desktop.Forms
             }
             if (!status.Running)
             {
-                _onlineLabel.Visible = true;
                 _onlineLabel.Text = "未连接";
                 _onlineLabel.ForeColor = Theme.Amber;
                 _onlineLabel.BackColor = Theme.AmberSoft;
+                _showOnlineBadge = true;
             }
             else if (status.TotalDevices == 0)
             {
-                _onlineLabel.Visible = false;
+                _showOnlineBadge = false;
             }
             else
             {
-                _onlineLabel.Visible = true;
                 _onlineLabel.Text = status.OnlineDevices + "/" + status.TotalDevices + " 在线";
                 _onlineLabel.ForeColor = status.OnlineDevices > 0 ? Theme.Green : Theme.Amber;
                 _onlineLabel.BackColor = status.OnlineDevices > 0 ? Theme.GreenSoft : Theme.AmberSoft;
+                _showOnlineBadge = true;
+            }
+            if (!_showOnlineBadge)
+            {
+                _onlineLabel.Visible = false;
             }
             if (_layoutHeader != null)
             {
                 _layoutHeader();
             }
+            _onlineLabel.Visible = _showOnlineBadge;
             RaiseStateChanged();
         }
 
@@ -1549,6 +1584,24 @@ namespace TransportHub.Desktop.Forms
                     _statusService.Current.DownloadBytesPerSecond, 0L).Replace("↓ ", String.Empty)
                 : String.Empty;
             return "接收 " + transfer.Percent + "%" + speed;
+        }
+
+        internal static string ResolveAttachmentStatus(
+            bool hasAttachment,
+            bool isAvailable,
+            string transferProgress,
+            bool syncRunning,
+            bool folderIdle)
+        {
+            if (!hasAttachment || isAvailable)
+            {
+                return null;
+            }
+            if (!String.IsNullOrWhiteSpace(transferProgress))
+            {
+                return transferProgress;
+            }
+            return syncRunning && folderIdle ? "已删除" : "同步中";
         }
 
         private void RestoreHeaderStatus()

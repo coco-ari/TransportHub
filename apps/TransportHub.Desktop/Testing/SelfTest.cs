@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using TransportHub.Desktop.Core;
+using TransportHub.Desktop.Forms;
 using TransportHub.Desktop.Models;
 using TransportHub.Desktop.Services;
 using TransportHub.Desktop.UI;
@@ -185,6 +186,13 @@ namespace TransportHub.Desktop.Testing
 
         private static void RunTimelineLayoutScenario(ICollection<string> lines)
         {
+            Assert(MainForm.ResolveAttachmentStatus(true, false, null, true, true) == "已删除",
+                "Idle missing attachment was not classified as deleted.");
+            Assert(MainForm.ResolveAttachmentStatus(true, false, null, true, false) == "同步中",
+                "Missing attachment was marked deleted while synchronization was active.");
+            Assert(MainForm.ResolveAttachmentStatus(true, false, "接收 50%", true, false) == "接收 50%",
+                "Incoming attachment progress was replaced by a generic status.");
+
             using (var control = new TimelineItemControl(new TimelineItemViewModel
             {
                 MessageId = "layout-test",
@@ -212,7 +220,25 @@ namespace TransportHub.Desktop.Testing
                 Assert(layout.MetadataBounds.Bottom <= layout.ControlHeight,
                     "Timeline timestamp extends beyond the item control.");
             }
+
+            using (var deletedControl = new TimelineItemControl(new TimelineItemViewModel
+            {
+                MessageId = "deleted-attachment-test",
+                Kind = TimelineMessageKind.Attachment,
+                IsOutgoing = false,
+                RelativePath = "测试电脑/已删除.pdf",
+                AbsolutePath = null,
+                MimeType = "application/pdf",
+                SizeBytes = 1024,
+                AttachmentProgress = "已删除",
+                Timestamp = DateTime.Now
+            }))
+            {
+                Assert(deletedControl.GetAttachmentDetailForTesting() == "1 KB  ·  已删除",
+                    "Deleted attachment was not labeled as deleted.");
+            }
             lines.Add("PASS: attachment fonts and timestamp fit without overlap");
+            lines.Add("PASS: missing attachment is labeled as deleted");
         }
 
         private static void RunRecentSelectionScenario(string root, ICollection<string> lines)

@@ -208,6 +208,11 @@ namespace TransportHub.Desktop.UI
             };
         }
 
+        internal string GetAttachmentDetailForTesting()
+        {
+            return GetAttachmentDetail();
+        }
+
         public override Size GetPreferredSize(Size proposedSize)
         {
             var width = proposedSize.Width;
@@ -260,6 +265,13 @@ namespace TransportHub.Desktop.UI
         protected override void OnDpiChangedAfterParent(EventArgs eventArgs)
         {
             base.OnDpiChangedAfterParent(eventArgs);
+            calculatedForWidth = -1;
+            RecalculateHeight();
+        }
+
+        protected override void OnFontChanged(EventArgs eventArgs)
+        {
+            base.OnFontChanged(eventArgs);
             calculatedForWidth = -1;
             RecalculateHeight();
         }
@@ -368,6 +380,10 @@ namespace TransportHub.Desktop.UI
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
+            // The control may have been measured before it inherited its final
+            // monitor DPI. Recalculate once the real native handle exists.
+            calculatedForWidth = -1;
+            RecalculateHeight();
             QueuePendingThumbnail();
         }
 
@@ -477,7 +493,9 @@ namespace TransportHub.Desktop.UI
             var contentWidth = Math.Max(ScaleLogical(60), bubbleWidth - bubblePadding * 2);
 
             var hasSender = !string.IsNullOrWhiteSpace(senderText);
-            var senderHeight = hasSender ? Math.Max(MeasureLineHeight(senderFont), ScaleLogical(14)) : 0;
+            var senderHeight = hasSender
+                ? Math.Max(MeasureLineHeight(senderFont) + ScaleLogical(2), ScaleLogical(16))
+                : 0;
             var contentHeight = MeasureAndPlaceContent(contentWidth);
             var bubbleHeight = bubblePadding + contentHeight + bubblePadding;
             if (hasSender)
@@ -505,7 +523,9 @@ namespace TransportHub.Desktop.UI
                 contentWidth,
                 contentHeight);
 
-            var metaHeight = Math.Max(MeasureLineHeight(metaFont), ScaleLogical(13));
+            var metaHeight = Math.Max(
+                MeasureLineHeight(metaFont) + ScaleLogical(2),
+                ScaleLogical(15));
             metaBounds = new Rectangle(
                 bubbleBounds.Left,
                 bubbleBounds.Bottom + metaGap,
@@ -527,7 +547,8 @@ namespace TransportHub.Desktop.UI
                         displayText,
                         font,
                         new Size(maximumContentWidth, int.MaxValue),
-                        TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
+                        TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix |
+                        TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
                     return Clamp(measured.Width, ScaleLogical(64), maximumContentWidth);
 
                 case PresentationKind.Attachment:
@@ -553,10 +574,15 @@ namespace TransportHub.Desktop.UI
                         GetDisplayText(),
                         font,
                         new Size(contentWidth, int.MaxValue),
-                        TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
+                        TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix |
+                        TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
                     var maximumHeight = ScaleLogical(MaximumBodyLogicalHeight);
                     bodyIsTruncated = measured.Height > maximumHeight;
-                    contentBounds = new Rectangle(0, 0, contentWidth, Math.Min(measured.Height, maximumHeight));
+                    contentBounds = new Rectangle(
+                        0,
+                        0,
+                        contentWidth,
+                        Math.Min(measured.Height + ScaleLogical(1), maximumHeight));
                     copyHitBounds = contentBounds;
                     return Math.Max(font.Height, contentBounds.Height);
 
@@ -564,11 +590,11 @@ namespace TransportHub.Desktop.UI
                     var attachmentPadding = ScaleLogical(6);
                     var attachmentLineGap = ScaleLogical(3);
                     var attachmentNameHeight = Math.Max(
-                        MeasureLineHeight(attachmentNameFont),
-                        ScaleLogical(18));
+                        MeasureLineHeight(attachmentNameFont) + ScaleLogical(2),
+                        ScaleLogical(20));
                     var attachmentDetailHeight = Math.Max(
-                        MeasureLineHeight(metaFont),
-                        ScaleLogical(15));
+                        MeasureLineHeight(metaFont) + ScaleLogical(2),
+                        ScaleLogical(17));
                     var textBlockHeight = attachmentNameHeight + attachmentLineGap + attachmentDetailHeight;
                     var attachmentIconHeight = ScaleLogical(36);
                     var attachmentHeight = Math.Max(
@@ -604,7 +630,9 @@ namespace TransportHub.Desktop.UI
                     }
                     var nameHeight = string.IsNullOrWhiteSpace(imageName)
                         ? 0
-                        : Math.Max(MeasureLineHeight(metaFont), ScaleLogical(18));
+                        : Math.Max(
+                            MeasureLineHeight(metaFont) + ScaleLogical(2),
+                            ScaleLogical(20));
                     attachmentNameBounds = new Rectangle(
                         0,
                         thumbnailBounds.Bottom + (nameHeight == 0 ? 0 : ScaleLogical(3)),
@@ -900,7 +928,10 @@ namespace TransportHub.Desktop.UI
             {
                 if (item != null && item.Kind == TimelineMessageKind.Attachment)
                 {
-                    ShowTransientTip("文件仍在同步，请稍后重试", PointToClient(Cursor.Position));
+                    var message = string.Equals(item.AttachmentProgress, "已删除", StringComparison.Ordinal)
+                        ? "文件已删除"
+                        : "文件仍在同步，请稍后重试";
+                    ShowTransientTip(message, PointToClient(Cursor.Position));
                 }
                 return;
             }
@@ -1205,7 +1236,9 @@ namespace TransportHub.Desktop.UI
                 case TimelineMessageKind.Link:
                     return PresentationKind.Link;
                 case TimelineMessageKind.Attachment:
-                    return IsImageAttachment(item) ? PresentationKind.Image : PresentationKind.Attachment;
+                    return IsImageAttachment(item) && !string.IsNullOrWhiteSpace(item.AbsolutePath)
+                        ? PresentationKind.Image
+                        : PresentationKind.Attachment;
                 default:
                     return PresentationKind.Text;
             }
@@ -1441,7 +1474,9 @@ namespace TransportHub.Desktop.UI
 
             if (value.Kind == TimelineMessageKind.Attachment)
             {
-                return IsImageAttachment(value) ? PresentationKind.Image : PresentationKind.Attachment;
+                return IsImageAttachment(value) && !string.IsNullOrWhiteSpace(value.AbsolutePath)
+                    ? PresentationKind.Image
+                    : PresentationKind.Attachment;
             }
 
             return PresentationKind.Text;
