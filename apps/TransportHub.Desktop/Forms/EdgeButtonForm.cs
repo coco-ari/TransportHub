@@ -88,7 +88,10 @@ namespace TransportHub.Desktop.Forms
 
         internal void RepositionToVisibleWorkArea()
         {
-            var screen = _screen ?? Screen.FromControl(this);
+            var screen = Screen.AllScreens.FirstOrDefault(item => item.DeviceName == (_screen == null ? null : _screen.DeviceName))
+                ?? Screen.AllScreens.FirstOrDefault(item => item.WorkingArea.IntersectsWith(Bounds))
+                ?? Screen.PrimaryScreen;
+            _screen = screen;
             var work = screen.WorkingArea;
             var x = _rightEdge ? work.Right - Width - ScaleValue(8) : work.Left + ScaleValue(8);
             var y = Math.Max(work.Top + ScaleValue(6), Math.Min(work.Bottom - Height - ScaleValue(6), Top));
@@ -97,7 +100,10 @@ namespace TransportHub.Desktop.Forms
 
         internal Rectangle GetExpandedBounds(Size desiredSize)
         {
-            var screen = _screen ?? Screen.FromControl(this);
+            var screen = Screen.AllScreens.FirstOrDefault(item => item.DeviceName == (_screen == null ? null : _screen.DeviceName))
+                ?? Screen.AllScreens.FirstOrDefault(item => item.WorkingArea.IntersectsWith(Bounds))
+                ?? Screen.PrimaryScreen;
+            _screen = screen;
             var work = screen.WorkingArea;
             var width = Math.Min(desiredSize.Width, Math.Max(320, work.Width - ScaleValue(16)));
             var height = Math.Min(desiredSize.Height, Math.Max(420, work.Height - ScaleValue(16)));

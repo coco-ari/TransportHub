@@ -77,6 +77,7 @@ namespace TransportHub.Desktop.Services
 
             try
             {
+                _context.RefreshTargetDevices();
                 var statusResponse = await _client.GetStringAsync("rest/system/status").ConfigureAwait(false);
                 var connectionsResponse = await _client.GetStringAsync("rest/system/connections").ConfigureAwait(false);
                 string folderResponse = null;
@@ -93,29 +94,33 @@ namespace TransportHub.Desktop.Services
                 var connectionsObject = AsDictionary(_serializer.DeserializeObject(connectionsResponse));
                 var folderObject = string.IsNullOrWhiteSpace(folderResponse) ? null : AsDictionary(_serializer.DeserializeObject(folderResponse));
 
-                var online = CountOnlineTargets(connectionsObject);
+                var onlineIds = GetOnlineTargetIds(connectionsObject);
+                var online = onlineIds.Count;
                 var state = GetString(folderObject, "state");
                 var idle = string.Equals(state, "idle", StringComparison.OrdinalIgnoreCase);
+                var remoteComplete = idle && await AreRemoteFoldersCompleteAsync(onlineIds).ConfigureAwait(false);
                 var total = _context.TargetDevices.Count;
                 var detail = total == 0
-                    ? "尚未添加其他电脑"
+                    ? "点击这里连接电脑"
                     : online == 0
                         ? "设备均离线，内容将在上线后同步"
-                        : idle
+                        : remoteComplete
                             ? online + " 台在线 · 目录最新"
                             : online + " 台在线 · 正在同步";
 
-                if (!string.IsNullOrWhiteSpace(GetString(statusObject, "myID")) && !string.Equals(GetString(statusObject, "myID"), _context.LocalDeviceId, StringComparison.OrdinalIgnoreCase))
+                var identityMatches = string.IsNullOrWhiteSpace(GetString(statusObject, "myID")) ||
+                    string.Equals(GetString(statusObject, "myID"), _context.LocalDeviceId, StringComparison.OrdinalIgnoreCase);
+                if (!identityMatches)
                 {
                     detail = "Syncthing 身份与当前配置不一致";
                 }
 
                 SetCurrent(new SyncthingStatus
                 {
-                    Running = true,
+                    Running = identityMatches,
                     OnlineDevices = online,
                     TotalDevices = total,
-                    FolderIdle = idle,
+                    FolderIdle = identityMatches && idle,
                     Detail = detail
                 });
             }
@@ -141,7 +146,7 @@ namespace TransportHub.Desktop.Services
             Process.Start(new ProcessStartInfo(_context.GuiUri.AbsoluteUri) { UseShellExecute = true });
         }
 
-        private int CountOnlineTargets(IDictionary<string, object> root)
+        private List<string> GetOnlineTargetIds(IDictionary<string, object> root)
         {
             object rawConnections;
             var connections = root != null && root.TryGetValue("connections", out rawConnections)
@@ -149,11 +154,11 @@ namespace TransportHub.Desktop.Services
                 : null;
             if (connections == null)
             {
-                return 0;
+                return new List<string>();
             }
 
             var targetIds = new HashSet<string>(_context.TargetDevices.Select(device => device.Id), StringComparer.OrdinalIgnoreCase);
-            var count = 0;
+            var result = new List<string>();
             foreach (var pair in connections)
             {
                 if (!targetIds.Contains(pair.Key))
@@ -164,10 +169,38 @@ namespace TransportHub.Desktop.Services
                 object connected;
                 if (value != null && value.TryGetValue("connected", out connected) && connected is bool && (bool)connected)
                 {
-                    count++;
+                    result.Add(pair.Key);
                 }
             }
-            return count;
+            return result;
+        }
+
+        private async Task<bool> AreRemoteFoldersCompleteAsync(IEnumerable<string> deviceIds)
+        {
+            foreach (var deviceId in deviceIds)
+            {
+                try
+                {
+                    var response = await _client.GetStringAsync(
+                        "rest/db/completion?folder=" + Uri.EscapeDataString(_context.FolderId) +
+                        "&device=" + Uri.EscapeDataString(deviceId)).ConfigureAwait(false);
+                    var completion = AsDictionary(_serializer.DeserializeObject(response));
+                    object rawValue;
+                    double value;
+                    if (completion == null || !completion.TryGetValue("completion", out rawValue) ||
+                        !Double.TryParse(Convert.ToString(rawValue),
+                            System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out value) || value < 99.999d)
+                    {
+                        return false;
+                    }
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private static IDictionary<string, object> AsDictionary(object value)

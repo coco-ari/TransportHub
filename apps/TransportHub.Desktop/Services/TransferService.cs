@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using TransportHub.Desktop.Core;
 using TransportHub.Desktop.Models;
 
 namespace TransportHub.Desktop.Services
@@ -56,6 +57,8 @@ namespace TransportHub.Desktop.Services
                 throw new FileNotFoundException("源文件或文件夹不存在。", sourcePath);
             }
 
+            EnsureDestinationRootsSafe();
+
             await _singleTransfer.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -79,6 +82,8 @@ namespace TransportHub.Desktop.Services
             {
                 throw new InvalidOperationException("粘贴的图片超过 100 MB 限制。");
             }
+
+            EnsureDestinationRootsSafe();
 
             await _singleTransfer.WaitAsync(cancellationToken).ConfigureAwait(false);
             string stagingFile = null;
@@ -154,8 +159,8 @@ namespace TransportHub.Desktop.Services
             }
 
             var sourceDirectory = new DirectoryInfo(sourcePath);
-            var files = EnumerateSafeFiles(sourceDirectory).ToList();
-            var total = files.Sum(file => file.Length);
+            var snapshot = CaptureDirectorySnapshot(sourceDirectory, cancellationToken);
+            var total = snapshot.Files.Sum(file => file.Length);
             if (total > TransportHub.Desktop.Core.TimelineProtocol.MaximumAttachmentBytes)
             {
                 throw new InvalidOperationException("文件夹总大小超过 TransportHub 支持的上限。");
@@ -166,19 +171,18 @@ namespace TransportHub.Desktop.Services
             try
             {
                 Directory.CreateDirectory(stagingDirectory);
-                foreach (var directory in EnumerateSafeDirectories(sourceDirectory))
+                foreach (var directory in snapshot.Directories)
                 {
-                    var relativeDirectory = GetRelativePath(sourceDirectory.FullName, directory.FullName);
-                    Directory.CreateDirectory(Path.Combine(stagingDirectory, relativeDirectory));
+                    Directory.CreateDirectory(Path.Combine(stagingDirectory, directory));
                 }
-                foreach (var file in files)
+                var hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var file in snapshot.Files)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var relative = GetRelativePath(sourceDirectory.FullName, file.FullName);
-                    var target = Path.Combine(stagingDirectory, relative);
+                    var target = Path.Combine(stagingDirectory, file.RelativePath);
                     Directory.CreateDirectory(Path.GetDirectoryName(target));
-                    await CopyFileContentsAsync(
-                        file.FullName,
+                    var hash = await CopyFileContentsAsync(
+                        file.FullPath,
                         target,
                         file.Length,
                         sourceDirectory.Name,
@@ -192,10 +196,36 @@ namespace TransportHub.Desktop.Services
                                 TotalBytes = total
                             });
                         }).ConfigureAwait(false);
+                    var after = new FileInfo(file.FullPath);
+                    after.Refresh();
+                    if (!after.Exists || after.Length != file.Length ||
+                        after.LastWriteTimeUtc.Ticks != file.LastWriteTimeUtcTicks)
+                    {
+                        throw new IOException("源文件夹在发送过程中发生变化，请重试。");
+                    }
+                    hashes[file.RelativePath] = hash;
                     copied += file.Length;
+                }
+                var finalSourceSnapshot = CaptureDirectorySnapshot(sourceDirectory, cancellationToken);
+                if (!snapshot.Matches(finalSourceSnapshot))
+                {
+                    throw new IOException("源文件夹在发送过程中发生变化，请重试。");
                 }
                 cancellationToken.ThrowIfCancellationRequested();
                 Directory.Move(stagingDirectory, destination);
+                var manifestHash = ComputeDirectoryManifestSha256(snapshot.Directories, snapshot.Files, hashes);
+
+                RaiseProgress(new TransferProgressInfo { DisplayName = sourceDirectory.Name, BytesCopied = total, TotalBytes = total });
+                return new TransferResult
+                {
+                    AbsolutePath = destination,
+                    RelativePath = GetRelativePath(_context.RootPath, destination),
+                    DisplayName = Path.GetFileName(destination),
+                    AttachmentType = "folder",
+                    MimeType = "inode/directory",
+                    Size = total,
+                    Sha256 = manifestHash
+                };
             }
             catch
             {
@@ -203,17 +233,6 @@ namespace TransportHub.Desktop.Services
                 throw;
             }
 
-            RaiseProgress(new TransferProgressInfo { DisplayName = sourceDirectory.Name, BytesCopied = total, TotalBytes = total });
-            return new TransferResult
-            {
-                AbsolutePath = destination,
-                RelativePath = GetRelativePath(_context.RootPath, destination),
-                DisplayName = Path.GetFileName(destination),
-                AttachmentType = "folder",
-                MimeType = "inode/directory",
-                Size = total,
-                Sha256 = string.Empty
-            };
         }
 
         private async Task<string> CopyFileContentsAsync(
@@ -250,9 +269,112 @@ namespace TransportHub.Desktop.Services
                     }
                 }
                 sha256.TransformFinalBlock(new byte[0], 0, 0);
+                if (copied != total)
+                {
+                    throw new IOException("源文件在发送过程中发生变化，请重试。");
+                }
                 output.Flush(true);
                 return BitConverter.ToString(sha256.Hash).Replace("-", string.Empty).ToLowerInvariant();
             }
+        }
+
+        internal static string ComputeDirectoryManifestSha256(string rootPath, CancellationToken cancellationToken)
+        {
+            var root = new DirectoryInfo(rootPath);
+            var snapshot = CaptureDirectorySnapshot(root, cancellationToken);
+            var hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in snapshot.Files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                using (var algorithm = SHA256.Create())
+                using (var stream = new FileStream(file.FullPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                    BufferSize, FileOptions.SequentialScan))
+                {
+                    hashes[file.RelativePath] = BitConverter.ToString(algorithm.ComputeHash(stream))
+                        .Replace("-", string.Empty).ToLowerInvariant();
+                }
+                var after = new FileInfo(file.FullPath);
+                after.Refresh();
+                if (!after.Exists || after.Length != file.Length ||
+                    after.LastWriteTimeUtc.Ticks != file.LastWriteTimeUtcTicks)
+                {
+                    throw new IOException("目录内容在校验过程中发生变化。");
+                }
+            }
+            var finalSnapshot = CaptureDirectorySnapshot(root, cancellationToken);
+            if (!snapshot.Matches(finalSnapshot))
+            {
+                throw new IOException("目录内容在校验过程中发生变化。");
+            }
+            return ComputeDirectoryManifestSha256(snapshot.Directories, snapshot.Files, hashes);
+        }
+
+        private static DirectorySnapshot CaptureDirectorySnapshot(DirectoryInfo root, CancellationToken cancellationToken)
+        {
+            if (!root.Exists)
+            {
+                throw new DirectoryNotFoundException(root.FullName);
+            }
+            RejectReparsePoint(root.FullName);
+            var directories = new List<string>();
+            var files = new List<DirectoryFileSnapshot>();
+            var pending = new Stack<DirectoryInfo>();
+            pending.Push(root);
+            while (pending.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var directory = pending.Pop();
+                RejectReparsePoint(directory.FullName);
+                foreach (var child in directory.GetDirectories())
+                {
+                    RejectReparsePoint(child.FullName);
+                    directories.Add(GetRelativePath(root.FullName, child.FullName).Replace('\\', '/'));
+                    pending.Push(child);
+                }
+                foreach (var file in directory.GetFiles())
+                {
+                    RejectReparsePoint(file.FullName);
+                    files.Add(new DirectoryFileSnapshot
+                    {
+                        FullPath = file.FullName,
+                        RelativePath = GetRelativePath(root.FullName, file.FullName).Replace('\\', '/'),
+                        Length = file.Length,
+                        LastWriteTimeUtcTicks = file.LastWriteTimeUtc.Ticks
+                    });
+                }
+            }
+            directories.Sort(StringComparer.Ordinal);
+            files.Sort((left, right) => StringComparer.Ordinal.Compare(left.RelativePath, right.RelativePath));
+            return new DirectorySnapshot(directories, files);
+        }
+
+        private static string ComputeDirectoryManifestSha256(
+            IEnumerable<string> directories,
+            IEnumerable<DirectoryFileSnapshot> files,
+            IDictionary<string, string> hashes)
+        {
+            var manifest = new StringBuilder();
+            foreach (var directory in directories)
+            {
+                manifest.Append("D\t")
+                    .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(directory)))
+                    .Append('\n');
+            }
+            foreach (var file in files)
+            {
+                manifest.Append("F\t")
+                    .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(file.RelativePath)))
+                    .Append('\t').Append(file.Length)
+                    .Append('\t').Append(hashes[file.RelativePath])
+                    .Append('\n');
+            }
+            return ComputeSha256(Encoding.UTF8.GetBytes(manifest.ToString()));
+        }
+
+        private void EnsureDestinationRootsSafe()
+        {
+            PathSafety.EnsureNoReparsePoints(_context.RootPath, _context.MachineFolder);
+            RejectReparsePoint(_context.StagingPath);
         }
 
         private IEnumerable<FileInfo> EnumerateSafeFiles(DirectoryInfo root)
@@ -418,6 +540,52 @@ namespace TransportHub.Desktop.Services
             catch (Exception)
             {
                 // Best-effort cleanup of a unique staging file only.
+            }
+        }
+
+        private sealed class DirectoryFileSnapshot
+        {
+            internal string FullPath { get; set; }
+            internal string RelativePath { get; set; }
+            internal long Length { get; set; }
+            internal long LastWriteTimeUtcTicks { get; set; }
+        }
+
+        private sealed class DirectorySnapshot
+        {
+            internal DirectorySnapshot(List<string> directories, List<DirectoryFileSnapshot> files)
+            {
+                Directories = directories;
+                Files = files;
+            }
+
+            internal List<string> Directories { get; private set; }
+            internal List<DirectoryFileSnapshot> Files { get; private set; }
+
+            internal bool Matches(DirectorySnapshot other)
+            {
+                if (other == null || Directories.Count != other.Directories.Count || Files.Count != other.Files.Count)
+                {
+                    return false;
+                }
+                for (var index = 0; index < Directories.Count; index++)
+                {
+                    if (!String.Equals(Directories[index], other.Directories[index], StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+                }
+                for (var index = 0; index < Files.Count; index++)
+                {
+                    var left = Files[index];
+                    var right = other.Files[index];
+                    if (!String.Equals(left.RelativePath, right.RelativePath, StringComparison.Ordinal) ||
+                        left.Length != right.Length || left.LastWriteTimeUtcTicks != right.LastWriteTimeUtcTicks)
+                    {
+                        return false;
+                    }
+                }
+                return true;
             }
         }
 

@@ -10,6 +10,7 @@ namespace TransportHub.Desktop
     internal static class Program
     {
         private const string MutexName = "Local\\TransportHub.Desktop.4D504DF5-0CB9-4AB9-A3A6-7653830CC63C";
+        private const string ActivationEventName = "Local\\TransportHub.Desktop.Activate.4D504DF5-0CB9-4AB9-A3A6-7653830CC63C";
 
         [STAThread]
         private static int Main(string[] args)
@@ -21,10 +22,11 @@ namespace TransportHub.Desktop
 
             bool createdNew;
             using (var mutex = new Mutex(true, MutexName, out createdNew))
+            using (var activationEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ActivationEventName))
             {
                 if (!createdNew)
                 {
-                    MessageBox.Show("TransportHub 已经在运行。请点击屏幕边缘按钮或系统托盘图标。", "TransportHub", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    activationEvent.Set();
                     return 0;
                 }
 
@@ -35,7 +37,20 @@ namespace TransportHub.Desktop
                 {
                     using (var context = new TransportHubApplicationContext())
                     {
-                        System.Windows.Forms.Application.Run(context);
+                        var activationRegistration = ThreadPool.RegisterWaitForSingleObject(
+                            activationEvent,
+                            delegate { context.ActivateFromExternalLaunch(); },
+                            null,
+                            Timeout.Infinite,
+                            false);
+                        try
+                        {
+                            System.Windows.Forms.Application.Run(context);
+                        }
+                        finally
+                        {
+                            activationRegistration.Unregister(null);
+                        }
                     }
                     return 0;
                 }

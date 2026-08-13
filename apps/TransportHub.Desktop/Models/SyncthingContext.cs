@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
+using TransportHub.Desktop.Core;
 
 namespace TransportHub.Desktop.Models
 {
@@ -112,6 +113,7 @@ namespace TransportHub.Desktop.Models
             {
                 Directory.CreateDirectory(rootPath);
             }
+            PathSafety.EnsureNoReparsePoints(rootPath, rootPath);
 
             var executable = FindSyncthingExecutable();
             var localDeviceId = ReadDeviceId(executable, configDirectory);
@@ -160,12 +162,12 @@ namespace TransportHub.Desktop.Models
             var apiKey = (gui.SelectSingleNode("apikey") == null ? null : gui.SelectSingleNode("apikey").InnerText) ?? string.Empty;
 
             var machineDirectoryName = SanitizeFileName(Environment.MachineName);
-            if (string.IsNullOrWhiteSpace(machineDirectoryName))
-            {
-                machineDirectoryName = "device-" + localDeviceId.Substring(0, 7);
-            }
+            machineDirectoryName = (String.IsNullOrWhiteSpace(machineDirectoryName) ? "device" : machineDirectoryName) +
+                "-" + localDeviceId.Substring(0, 7);
             var machineFolder = Path.Combine(rootPath, machineDirectoryName);
+            PathSafety.EnsureNoReparsePoints(rootPath, machineFolder);
             Directory.CreateDirectory(machineFolder);
+            PathSafety.EnsureNoReparsePoints(rootPath, machineFolder);
 
             var parent = Directory.GetParent(rootPath);
             if (parent == null)
@@ -176,6 +178,16 @@ namespace TransportHub.Desktop.Models
                 parent.FullName,
                 "." + new DirectoryInfo(rootPath).Name + ".transporthub-staging-" + ShortDeviceKey(localDeviceId));
             Directory.CreateDirectory(stagingPath);
+            if ((File.GetAttributes(stagingPath) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new IOException("TransportHub 暂存目录不能是符号链接或目录联接。");
+            }
+
+            var guiUri = BuildGuiUri(guiAddress, string.Equals(tlsText, "true", StringComparison.OrdinalIgnoreCase));
+            if (!guiUri.IsLoopback)
+            {
+                throw new InvalidOperationException("Syncthing GUI/API 必须绑定到本机回环地址，避免 API Key 被发送到远程主机。");
+            }
 
             return new SyncthingContext
             {
@@ -188,7 +200,7 @@ namespace TransportHub.Desktop.Models
                 LocalDeviceId = localDeviceId,
                 LocalDeviceName = localDeviceName,
                 ApiKey = apiKey,
-                GuiUri = BuildGuiUri(guiAddress, string.Equals(tlsText, "true", StringComparison.OrdinalIgnoreCase)),
+                GuiUri = guiUri,
                 TargetDevices = targets
                     .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
                     .Select(group => group.First())

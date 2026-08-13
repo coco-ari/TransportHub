@@ -204,7 +204,9 @@ namespace TransportHub.Desktop.Core
         /// <summary>
         /// Creates an attachment event for a regular file or directory that already
         /// exists below SyncRoot. Directories must use MIME type inode/directory and
-        /// an empty hash. Regular files retain exact size and SHA-256 validation.
+        /// a deterministic manifest SHA-256. Regular files retain exact size and
+        /// SHA-256 validation. Readers still accept legacy directory events with an
+        /// empty hash for v0.1.0 compatibility.
         /// </summary>
         public TimelineMessage CreateAttachment(
             string relativePath,
@@ -225,7 +227,7 @@ namespace TransportHub.Desktop.Core
             if (isDirectory)
             {
                 PathSafety.EnsureExistingDirectoryIsSafe(SyncRoot, normalizedRelativePath);
-                normalizedSha256 = ValidateSha256(sha256, true);
+                normalizedSha256 = ValidateSha256(sha256, false);
             }
             else
             {
@@ -283,6 +285,41 @@ namespace TransportHub.Desktop.Core
             }
 
             List<string> paths = EnumerateMessageFiles(rejections);
+            paths.Sort(CompareMessagePathsNewestFirst);
+            List<TimelineMessage> messages = new List<TimelineMessage>();
+            HashSet<string> messageIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string path in paths)
+            {
+                TimelineMessage message;
+                string rejectionReason;
+                if (!TryLoadMessageFile(path, out message, out rejectionReason))
+                {
+                    AddRejection(rejections, path, rejectionReason);
+                    continue;
+                }
+                if (!messageIds.Add(message.Id))
+                {
+                    AddRejection(rejections, path, "A duplicate message ID was ignored.");
+                    continue;
+                }
+                messages.Add(message);
+                if (messages.Count == maxCount)
+                {
+                    break;
+                }
+            }
+            messages.Sort(CompareMessagesAscending);
+            return messages.AsReadOnly();
+        }
+
+        internal IReadOnlyList<TimelineMessage> LoadAllMessagesForReceiptBackfill()
+        {
+            return LoadAllMessages(null).AsReadOnly();
+        }
+
+        private List<TimelineMessage> LoadAllMessages(ICollection<TimelineReadRejection> rejections)
+        {
+            List<string> paths = EnumerateMessageFiles(rejections);
             paths.Sort(StringComparer.OrdinalIgnoreCase);
             List<TimelineMessage> messages = new List<TimelineMessage>();
             HashSet<string> messageIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -306,11 +343,7 @@ namespace TransportHub.Desktop.Core
             }
 
             messages.Sort(CompareMessagesAscending);
-            if (messages.Count > maxCount)
-            {
-                messages.RemoveRange(0, messages.Count - maxCount);
-            }
-            return messages.AsReadOnly();
+            return messages;
         }
 
         /// <summary>
@@ -377,6 +410,21 @@ namespace TransportHub.Desktop.Core
             if (!TryGetMessage(messageId, out message))
             {
                 throw new ArgumentException("The receipt refers to an unknown or invalid message.", "messageId");
+            }
+
+            return CreateDeliveryReceipt(message);
+        }
+
+        /// <summary>
+        /// Creates a receipt for a message that was already parsed by this store.
+        /// This avoids re-enumerating the complete message history for every item in
+        /// a refresh or backlog pass.
+        /// </summary>
+        internal DeliveryReceipt CreateDeliveryReceipt(TimelineMessage message)
+        {
+            if (message == null)
+            {
+                throw new ArgumentNullException("message");
             }
 
             string normalizedMessageId = message.Id;
@@ -1175,6 +1223,30 @@ namespace TransportHub.Desktop.Core
             return timeComparison != 0
                 ? timeComparison
                 : StringComparer.Ordinal.Compare(left.Id, right.Id);
+        }
+
+        private static int CompareMessagePathsNewestFirst(string left, string right)
+        {
+            DateTime leftCreated = GetFileCreationTimeUtcSafe(left);
+            DateTime rightCreated = GetFileCreationTimeUtcSafe(right);
+            int comparison = DateTime.Compare(rightCreated, leftCreated);
+            return comparison != 0 ? comparison : StringComparer.OrdinalIgnoreCase.Compare(right, left);
+        }
+
+        private static DateTime GetFileCreationTimeUtcSafe(string path)
+        {
+            try
+            {
+                return File.GetCreationTimeUtc(path);
+            }
+            catch (Exception exception)
+            {
+                if (!IsExpectedReadFailure(exception))
+                {
+                    throw;
+                }
+                return DateTime.MinValue;
+            }
         }
 
         private static string KindToWire(TimelineMessageKind kind)

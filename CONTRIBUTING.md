@@ -27,7 +27,7 @@ if ($process.ExitCode -ne 0) { throw "Self-tests failed: $($process.ExitCode)" }
 Build the one-click Windows installer with:
 
 ```powershell
-& .\scripts\package-release.ps1 -Version 0.1.0
+& .\scripts\package-release.ps1
 ```
 
 ## Pull requests

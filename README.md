@@ -13,6 +13,7 @@ TransportHub 是一个面向多台自有 Windows 电脑的轻量悬浮投递窗�
 - 通过回形针、拖放或剪贴板发送文件、文件夹和图片。
 - 点击附件卡片，在资源管理器中打开所在目录并选中文件。
 - 显示传输进度、在线设备数量和消息送达状态。
+- 在悬浮窗内复制连接码、发起连接并确认新电脑，无需打开 Syncthing 网页。
 - 支持 Syncthing 的局域网直连、公网 NAT 穿透及端到端加密中继。
 - TransportHub 与 Syncthing 均可在 Windows 登录后自动启动；卸载桌面窗不会删除 Syncthing 或同步数据。
 
@@ -37,7 +38,7 @@ Syncthing ── 局域网直连 / 公网直连 / 加密中继 ── 其他电�
 ## 一键安装（推荐）
 
 打开 [GitHub Releases](https://github.com/coco-ari/TransportHub/releases)，下载并双击
-`TransportHub-Setup-v0.1.0.exe`。只需要运行这一个安装程序，无需先安装 Syncthing，
+`TransportHub-Setup-v<版本>.exe`。只需要运行这一个安装程序，无需先安装 Syncthing，
 也无需下载源码或 Visual Studio。
 
 安装程序会自动完成：
@@ -54,10 +55,12 @@ Syncthing ── 局域网直连 / 公网直连 / 加密中继 ── 其他电�
 管理员确认。安装器目前尚未代码签名，因此可能显示 SmartScreen 或“未知发布者”；请只从本仓库
 Release 下载，并使用随附的 `SHA256SUMS.txt` 核验文件。
 
-安装完成后，双击桌面的 TransportHub 图标，或点击屏幕边缘的紫色 `T` 按钮。要让多台电脑
-互相同步，仍需按下文交换各自的 Syncthing Device ID；安装器不会自动信任陌生电脑。
+安装完成后，双击桌面的 TransportHub 图标，或点击屏幕边缘的紫色 `T` 按钮。安装器会把
+TransportHub 与 Syncthing 一次装好；电脑之间的首次互信在 TransportHub 窗口内完成。
 
 升级时直接运行新版安装程序，不需要先卸载。设备身份、同步配置、消息和文件都会保留。
+如果 Syncthing 安装、网络配置或防火墙配置失败，安装器会中止并保留当前版本，
+不会留下无法使用的半安装状态。
 
 ## 系统要求
 
@@ -75,14 +78,24 @@ Release 下载，并使用随附的 `SHA256SUMS.txt` 核验文件。
 
 ## 添加其他电脑
 
-在每台电脑打开 Syncthing Web GUI：
+推荐流程：
+
+1. 在主电脑打开 TransportHub，点击标题下方的“点击这里连接电脑”。
+2. 点击“复制”本机连接码，通过可信渠道把它发到新电脑。
+3. 新电脑只需运行同一个一键安装包；启动后点击同一位置，粘贴连接码并点“连接”。
+4. 主电脑会显示“新电脑请求连接”，核对电脑名称和连接码后点“接受”。
+5. 状态变成在线后，文字和文件会自动同步；局域网和公网使用同一套步骤。
+
+连接码包含 Syncthing Device ID 和电脑显示名称，不包含证书、私钥或 API Key。连接码本身
+不是密码；TransportHub 仍要求已连接一方明确接受新设备，防止陌生电脑直接加入资料空间。
+
+如需兼容旧版本，也可以直接粘贴完整的 Syncthing Device ID。手动管理可打开 Syncthing Web GUI：
 
 ```text
 http://127.0.0.1:8384/
 ```
 
-通过“操作 → 显示 ID”获取 Device ID，并通过可信渠道交换。双方都需要添加对方并共享
-`transporthub-data`。从源码仓库操作时，也可以在双方分别运行：
+从源码仓库操作时，也可以在双方分别运行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\add-peer.ps1 `
@@ -144,6 +157,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1 `
 - 在窗口中按 Ctrl+V 可发送剪贴板图片、文件或单独的 HTTP(S) 链接。
 - 点击已到达的附件卡片会打开资源管理器并定位文件。
 - 点击标题栏 `—` 折叠到屏幕边缘，点击 `×` 隐藏到系统托盘。
+- 点击标题下方的连接状态可随时查看本机连接码、连接新电脑或接受连接请求。
 
 ## 卸载
 

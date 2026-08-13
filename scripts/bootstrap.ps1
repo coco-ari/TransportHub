@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 
 [CmdletBinding()]
 param(
@@ -36,6 +36,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $packageId = 'BillStewart.SyncthingWindowsSetup'
+$packageVersion = '2.0.2'
 $staggeredMaxAgeSeconds = '7776000'
 $versionCleanupIntervalSeconds = '3600'
 
@@ -118,6 +119,30 @@ function Test-PathsOverlap {
 
     return $FirstPath.StartsWith($secondPrefix, [StringComparison]::OrdinalIgnoreCase) -or
         $SecondPath.StartsWith($firstPrefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-NoExistingReparsePoint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path
+    )
+
+    $current = Resolve-NormalizedPath -Path $Path
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Reparse points are not allowed in the TransportHub path: '$current'."
+            }
+        }
+        $parent = Split-Path -Path $current -Parent
+        if ([string]::IsNullOrWhiteSpace($parent) -or
+            [string]::Equals($parent, $current, [StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $current = $parent
+    }
 }
 
 function Invoke-NativeCommand {
@@ -240,6 +265,7 @@ function Install-BillStewartSyncthing {
         'install',
         '--id', $packageId,
         '--exact',
+        '--version', $packageVersion,
         '--scope', 'user',
         '--silent',
         '--accept-package-agreements',
@@ -479,6 +505,13 @@ if ($resolvedFolderPath.StartsWith('\\', [StringComparison]::Ordinal)) {
 if (Test-PathsOverlap -FirstPath $resolvedFolderPath -SecondPath $resolvedConfigDirectory) {
     throw 'The synchronized folder must not contain, or be contained by, the Syncthing configuration directory.'
 }
+Assert-NoExistingReparsePoint -Path $resolvedFolderPath
+Assert-NoExistingReparsePoint -Path $resolvedConfigDirectory
+
+$existingService = Get-Service -Name 'syncthing' -ErrorAction SilentlyContinue
+if ($null -ne $existingService) {
+    throw '检测到全局服务版 Syncthing。TransportHub 当前只支持当前用户安装；请先停用服务版，或改用独立 Windows 用户安装。'
+}
 
 $installation = Get-BillStewartInstallation
 $syncthingExecutable = if ($null -ne $installation) {
@@ -528,7 +561,7 @@ if (-not $SkipFirewall) {
                 } while ($firewallTest.ExitCode -ne 0 -and [DateTime]::UtcNow -lt $firewallDeadline)
 
                 if ($firewallTest.ExitCode -ne 0) {
-                    Write-Warning 'The Syncthing firewall rule is still absent (UAC may have been declined); continuing configuration.'
+                    throw 'The Syncthing firewall rule is still absent. Approve the Windows UAC prompt and retry installation.'
                 }
             }
         }
@@ -579,13 +612,13 @@ foreach ($configuredFolder in $configuredFolders) {
 if (-not (Test-Path -LiteralPath $resolvedFolderPath -PathType Container)) {
     New-Item -ItemType Directory -Path $resolvedFolderPath -Force | Out-Null
 }
+Assert-NoExistingReparsePoint -Path $resolvedFolderPath
 
 $machineDirectoryName = [Environment]::MachineName.Trim()
 $machineDirectoryName = $machineDirectoryName -replace '[<>:"/\\|?*]', '_'
 $machineDirectoryName = $machineDirectoryName.TrimEnd([char[]] @(' ', '.'))
-if ([string]::IsNullOrWhiteSpace($machineDirectoryName)) {
-    $machineDirectoryName = 'device-' + $deviceId.Substring(0, 7)
-}
+$machineDirectoryBase = if ([string]::IsNullOrWhiteSpace($machineDirectoryName)) { 'device' } else { $machineDirectoryName }
+$machineDirectoryName = $machineDirectoryBase + '-' + $deviceId.Substring(0, 7)
 
 $machineDirectory = Join-Path -Path $resolvedFolderPath -ChildPath $machineDirectoryName
 if (Test-Path -LiteralPath $machineDirectory -PathType Leaf) {
@@ -594,6 +627,7 @@ if (Test-Path -LiteralPath $machineDirectory -PathType Leaf) {
 if (-not (Test-Path -LiteralPath $machineDirectory -PathType Container)) {
     New-Item -ItemType Directory -Path $machineDirectory -Force | Out-Null
 }
+Assert-NoExistingReparsePoint -Path $machineDirectory
 
 $folderWasCreated = $null -eq $targetFolder
 if ($folderWasCreated) {
@@ -619,6 +653,17 @@ Invoke-SyncthingCli -ExecutablePath $syncthingExecutable -HomeDirectory $resolve
     -CliArguments @('config', 'folders', $FolderId, 'versioning', 'params', 'set', 'maxAge', $staggeredMaxAgeSeconds) | Out-Null
 Invoke-SyncthingCli -ExecutablePath $syncthingExecutable -HomeDirectory $resolvedConfigDirectory `
     -CliArguments @('config', 'folders', $FolderId, 'versioning', 'cleanup-intervals', 'set', $versionCleanupIntervalSeconds) | Out-Null
+
+# TransportHub promises automatic LAN and Internet connectivity. Normalize these
+# options even when an existing per-user Syncthing profile had disabled them.
+Invoke-SyncthingCli -ExecutablePath $syncthingExecutable -HomeDirectory $resolvedConfigDirectory `
+    -CliArguments @('config', 'options', 'global-ann-enabled', 'set', 'true') | Out-Null
+Invoke-SyncthingCli -ExecutablePath $syncthingExecutable -HomeDirectory $resolvedConfigDirectory `
+    -CliArguments @('config', 'options', 'local-ann-enabled', 'set', 'true') | Out-Null
+Invoke-SyncthingCli -ExecutablePath $syncthingExecutable -HomeDirectory $resolvedConfigDirectory `
+    -CliArguments @('config', 'options', 'relays-enabled', 'set', 'true') | Out-Null
+Invoke-SyncthingCli -ExecutablePath $syncthingExecutable -HomeDirectory $resolvedConfigDirectory `
+    -CliArguments @('config', 'options', 'natenabled', 'set', 'true') | Out-Null
 
 $verificationResult = Invoke-SyncthingCli -ExecutablePath $syncthingExecutable -HomeDirectory $resolvedConfigDirectory `
     -CliArguments @('config', 'folders', $FolderId, 'dump-json')

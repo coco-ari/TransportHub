@@ -81,30 +81,46 @@ if ($folders -notcontains $FolderId) {
 }
 
 $devices = Convert-ToLineList -InputObject @(Invoke-SyncthingCli -Arguments @("config", "devices", "list"))
+$deviceWasAdded = $false
 if ($devices -notcontains $DeviceId) {
     $addDeviceArguments = @("config", "devices", "add", "--device-id", $DeviceId)
     if (-not [string]::IsNullOrWhiteSpace($DeviceName)) {
         $addDeviceArguments += @("--name", $DeviceName.Trim())
     }
     Invoke-SyncthingCli -Arguments $addDeviceArguments | Out-Null
+    $deviceWasAdded = $true
     Write-Host "[ADDED] Remote device $DeviceId"
 } else {
     Write-Host "[OK] Remote device already exists: $DeviceId"
 }
 
-$folderDevices = Convert-ToLineList -InputObject @(Invoke-SyncthingCli -Arguments @("config", "folders", $FolderId, "devices", "list"))
-if ($folderDevices -notcontains $DeviceId) {
-    Invoke-SyncthingCli -Arguments @(
-        "config", "folders", $FolderId, "devices", "add", "--device-id", $DeviceId
-    ) | Out-Null
-    Write-Host "[SHARED] Folder '$FolderId' is now shared with $DeviceId"
-} else {
-    Write-Host "[OK] Folder '$FolderId' is already shared with $DeviceId"
-}
+try {
+    $folderDevices = Convert-ToLineList -InputObject @(Invoke-SyncthingCli -Arguments @("config", "folders", $FolderId, "devices", "list"))
+    if ($folderDevices -notcontains $DeviceId) {
+        Invoke-SyncthingCli -Arguments @(
+            "config", "folders", $FolderId, "devices", "add", "--device-id", $DeviceId
+        ) | Out-Null
+        Write-Host "[SHARED] Folder '$FolderId' is now shared with $DeviceId"
+    } else {
+        Write-Host "[OK] Folder '$FolderId' is already shared with $DeviceId"
+    }
 
-$finalDevices = Convert-ToLineList -InputObject @(Invoke-SyncthingCli -Arguments @("config", "folders", $FolderId, "devices", "list"))
-if ($finalDevices -notcontains $DeviceId) {
-    throw "Verification failed: the remote device was not added to folder '$FolderId'."
+    $finalDevices = Convert-ToLineList -InputObject @(Invoke-SyncthingCli -Arguments @("config", "folders", $FolderId, "devices", "list"))
+    if ($finalDevices -notcontains $DeviceId) {
+        throw "Verification failed: the remote device was not added to folder '$FolderId'."
+    }
+}
+catch {
+    if ($deviceWasAdded) {
+        try {
+            Invoke-SyncthingCli -Arguments @("config", "devices", $DeviceId, "remove") | Out-Null
+            Write-Warning "Pairing failed; the newly added remote device was rolled back."
+        }
+        catch {
+            Write-Warning "Pairing failed and the newly added remote device could not be rolled back automatically."
+        }
+    }
+    throw
 }
 
 Write-Host ""

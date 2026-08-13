@@ -1,7 +1,18 @@
-# TransportHub v0.1.0（预览版）
+# TransportHub v0.1.1（预览版）
 
-这是首个 Windows 公开预览版。TransportHub 在 Syncthing 之上提供一个可置顶、可折叠的
+这是 Windows 公开预览修复版。TransportHub 在 Syncthing 之上提供一个可置顶、可折叠的
 文字和文件投递窗口。
+
+## v0.1.1 修复
+
+- 修复程序运行时卸载后残留进程和可执行文件的问题
+- Syncthing 安装或配置失败时中止安装，不再留下半安装状态
+- 文件按 SHA-256、目录按清单哈希校验后才显示送达
+- 退出时等待传输取消与暂存清理，减少孤儿文件
+- 静默升级完成后重新启动 TransportHub
+- 再次点击桌面快捷方式会直接唤醒已有窗口
+- 粘贴公开图片链接时可下载并作为图片附件发送
+- 在 TransportHub 窗口内复制连接码、连接新电脑并确认请求，无需打开 Syncthing 网页
 
 ## 本版内容
 
@@ -14,9 +25,10 @@
 
 ## 安装
 
-1. 下载 `TransportHub-Setup-v0.1.0.exe`。
+1. 下载 `TransportHub-Setup-v0.1.1.exe`。
 2. 双击安装；防火墙配置时 Windows 可能请求管理员确认。
-3. 在每台电脑完成安装后，通过可信渠道交换 Syncthing Device ID，并共享 `transporthub-data`。
+3. 主电脑点击标题下方的连接状态并复制连接码；新电脑粘贴后点“连接”。
+4. 主电脑核对名称后点“接受”，双方会自动共享 `transporthub-data`。
 
 升级时直接运行新版安装程序，无需先卸载。
 

@@ -47,6 +47,7 @@
     <Compile Include="Core\PathSafety.cs" />
     <Compile Include="Core\TimelineModels.cs" />
     <Compile Include="Core\TimelineStore.cs" />
+    <Compile Include="Forms\ConnectionForm.cs" />
     <Compile Include="Forms\EdgeButtonForm.cs" />
     <Compile Include="Forms\MainForm.cs" />
     <Compile Include="Interop\ClipboardPayloadReader.cs" />
@@ -55,6 +56,7 @@
     <Compile Include="Models\SyncthingContext.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Services\ConnectionService.cs" />
     <Compile Include="Services\SyncthingStatusService.cs" />
     <Compile Include="Services\TransferService.cs" />
     <Compile Include="Testing\SelfTest.cs" />

@@ -25,8 +25,10 @@ namespace TransportHub.Desktop.Testing
             {
                 Directory.CreateDirectory(root);
                 RunTimelineScenario(root, lines);
+                RunRecentSelectionScenario(root, lines);
                 RunTransferScenario(root, lines);
                 RunPathSafetyScenario(root, lines);
+                RunConnectionCodeScenario(lines);
                 lines.Add("PASS: all TransportHub self-tests completed");
                 WriteResult(lines, true);
                 return 0;
@@ -91,7 +93,7 @@ namespace TransportHub.Desktop.Testing
             Assert(knownDevices.Contains(DeviceA) && knownDevices.Contains(DeviceB),
                 "Synchronized device registry did not discover both devices.");
             var receipt = receiver.CreateDeliveryReceipt(text.Id);
-            var receiptAgain = receiver.CreateDeliveryReceipt(text.Id);
+            var receiptAgain = receiver.CreateDeliveryReceipt(text);
             Assert(receipt.ReceiverDeviceId == DeviceB && receiptAgain.ReceivedUtc == receipt.ReceivedUtc,
                 "Delivery receipt creation was not idempotent.");
             var summary = sender.GetDeliverySummary(text);
@@ -125,9 +127,55 @@ namespace TransportHub.Desktop.Testing
                 "Alternate data streams must be rejected.");
             AssertThrows<ArgumentException>(() => PathSafety.NormalizeRelativePath("PC-A\\x.sync-conflict-1.txt"),
                 "Syncthing conflict copies must be rejected as protocol attachments.");
+            Assert(PathSafety.NormalizeRelativePath("PC-A\\sync-conflict-notes.txt") == "PC-A/sync-conflict-notes.txt",
+                "A normal filename containing the words sync-conflict was rejected.");
             AssertThrows<ArgumentException>(() => PathSafety.ResolveUnderRoot(root, ".transporthub/messages.json"),
                 "Protocol metadata must not be exposed as an attachment.");
             lines.Add("PASS: rooted, traversal, ADS, conflict, and metadata path rejection");
+        }
+
+        private static void RunConnectionCodeScenario(ICollection<string> lines)
+        {
+            var code = ConnectionService.BuildConnectionCode(DeviceA, "办公室电脑");
+            var parsed = ConnectionService.ParseConnectionCode(code);
+            Assert(parsed.DeviceId == DeviceA && parsed.DeviceName == "办公室电脑",
+                "Connection code did not preserve the device identity and display name.");
+            var raw = ConnectionService.ParseConnectionCode(DeviceB.ToLowerInvariant());
+            Assert(raw.DeviceId == DeviceB && String.IsNullOrEmpty(raw.DeviceName),
+                "A raw Syncthing device ID was not accepted for compatibility.");
+            AssertThrows<ArgumentException>(() => ConnectionService.ParseConnectionCode("TH1:invalid:name"),
+                "Malformed connection codes must be rejected.");
+            AssertThrows<ArgumentException>(() => ConnectionService.ParseConnectionCode(String.Empty),
+                "Empty connection codes must be rejected.");
+            lines.Add("PASS: connection-code round trip and invalid-input rejection");
+        }
+
+        private static void RunRecentSelectionScenario(string root, ICollection<string> lines)
+        {
+            var orderingRoot = Path.Combine(root, "ordering");
+            var id = 0;
+            var normalTime = new DateTime(2026, 8, 13, 2, 0, 0, DateTimeKind.Utc);
+            var store = new TimelineStore(orderingRoot, DeviceA, "Clock Test", () => normalTime,
+                () => (++id).ToString("X32"));
+            for (var index = 0; index < 300; index++)
+            {
+                store.CreateText("normal-" + index, new[] { DeviceB });
+            }
+            foreach (var path in Directory.GetFiles(store.MessagesRoot, "*.json", SearchOption.AllDirectories))
+            {
+                File.SetCreationTimeUtc(path, normalTime.AddDays(-2));
+            }
+
+            var skewedTime = normalTime.AddYears(-5);
+            var skewedStore = new TimelineStore(orderingRoot, DeviceA, "Clock Test", () => skewedTime,
+                () => (++id).ToString("X32"));
+            var skewed = skewedStore.CreateText("new arrival with old clock", new[] { DeviceB });
+            var skewedPath = Directory.GetFiles(skewedStore.MessagesRoot, skewed.Id + ".json", SearchOption.AllDirectories).Single();
+            File.SetCreationTimeUtc(skewedPath, normalTime);
+            var recent = skewedStore.LoadRecentMessages(300);
+            Assert(recent.Any(message => message.Id == skewed.Id),
+                "A newly arrived message from a clock-skewed computer was excluded from the recent window.");
+            lines.Add("PASS: recent-message selection tolerates sender clock skew");
         }
 
         private static void RunTransferScenario(string root, ICollection<string> lines)
@@ -151,6 +199,12 @@ namespace TransportHub.Desktop.Testing
             Assert(!String.Equals(first.AbsolutePath, second.AbsolutePath, StringComparison.OrdinalIgnoreCase) &&
                    Path.GetFileName(second.AbsolutePath).Contains("(2)"),
                 "File collision naming did not preserve both copies.");
+            var canceled = new CancellationToken(true);
+            AssertThrows<OperationCanceledException>(
+                () => service.SendPathAsync(sourceFile, canceled).GetAwaiter().GetResult(),
+                "A canceled transfer did not stop before publishing data.");
+            Assert(!Directory.EnumerateFileSystemEntries(staging).Any(),
+                "A canceled transfer left staging artifacts behind.");
 
             var sourceFolder = Path.Combine(sourceRoot, "资料目录");
             Directory.CreateDirectory(Path.Combine(sourceFolder, "nested"));
@@ -161,8 +215,12 @@ namespace TransportHub.Desktop.Testing
                 "Directory transfer did not preserve its hierarchy.");
             Assert(Directory.Exists(Path.Combine(folder.AbsolutePath, "空目录")),
                 "Directory transfer dropped an empty directory.");
-            Assert(folder.MimeType == "inode/directory" && String.IsNullOrEmpty(folder.Sha256),
+            Assert(folder.MimeType == "inode/directory" && folder.Sha256.Length == 64 &&
+                   TransferService.ComputeDirectoryManifestSha256(folder.AbsolutePath, CancellationToken.None) == folder.Sha256,
                 "Directory transfer metadata was invalid.");
+            File.AppendAllText(Path.Combine(folder.AbsolutePath, "nested", "item.txt"), "changed", Encoding.UTF8);
+            Assert(TransferService.ComputeDirectoryManifestSha256(folder.AbsolutePath, CancellationToken.None) != folder.Sha256,
+                "Directory manifest did not detect changed content.");
 
             var image = service.SendBytesAsync(new byte[] { 1, 2, 3, 4 }, "clipboard.bin", "application/octet-stream", CancellationToken.None)
                 .GetAwaiter().GetResult();

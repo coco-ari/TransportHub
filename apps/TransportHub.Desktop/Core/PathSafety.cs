@@ -102,7 +102,7 @@ namespace TransportHub.Desktop.Core
         public static bool IsSyncConflictPath(string path)
         {
             return !String.IsNullOrEmpty(path) &&
-                path.IndexOf("sync-conflict", StringComparison.OrdinalIgnoreCase) >= 0;
+                path.IndexOf(".sync-conflict-", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         /// <summary>

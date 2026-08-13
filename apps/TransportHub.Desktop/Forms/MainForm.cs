@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Security;
 using System.Security.Cryptography;
 using System.Threading;
@@ -24,10 +26,16 @@ namespace TransportHub.Desktop.Forms
         private readonly TimelineStore _timelineStore;
         private readonly TransferService _transferService;
         private readonly SyncthingStatusService _statusService;
+        private readonly ConnectionService _connectionService;
         private readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
+        private readonly object _operationLock = new object();
+        private readonly HashSet<Task> _operations = new HashSet<Task>();
+        private readonly object _integrityLock = new object();
+        private readonly Dictionary<string, AttachmentVerification> _attachmentVerifications =
+            new Dictionary<string, AttachmentVerification>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _knownMessageIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly FlowLayoutPanel _timeline;
-        private readonly Label _statusLabel;
+        private readonly Button _statusLabel;
         private readonly Label _onlineLabel;
         private readonly TextBox _composer;
         private readonly Label _placeholder;
@@ -41,6 +49,7 @@ namespace TransportHub.Desktop.Forms
         private string _lastNetworkDetail = "正在连接 Syncthing";
         private bool _initialTimelineLoad = true;
         private bool _allowClose;
+        private bool _shuttingDown;
         private bool _resourcesDisposed;
         private int _reloadPending = 1;
         private int _refreshTickCount;
@@ -49,18 +58,21 @@ namespace TransportHub.Desktop.Forms
         private int _activeTransfers;
         private int _recoveringOrphans;
         private int _backfillingReceipts;
+        private DateTime _lastReceiptBackfillUtc = DateTime.MinValue;
         private Action _layoutHeader;
 
         internal MainForm(
             SyncthingContext context,
             TimelineStore timelineStore,
             TransferService transferService,
-            SyncthingStatusService statusService)
+            SyncthingStatusService statusService,
+            ConnectionService connectionService)
         {
             _context = context ?? throw new ArgumentNullException("context");
             _timelineStore = timelineStore ?? throw new ArgumentNullException("timelineStore");
             _transferService = transferService ?? throw new ArgumentNullException("transferService");
             _statusService = statusService ?? throw new ArgumentNullException("statusService");
+            _connectionService = connectionService ?? throw new ArgumentNullException("connectionService");
 
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Theme.Panel;
@@ -97,17 +109,26 @@ namespace TransportHub.Desktop.Forms
             title.MouseDown += HeaderMouseDown;
             header.Controls.Add(title);
 
-            _statusLabel = new Label
+            _statusLabel = new Button
             {
                 AutoEllipsis = true,
                 Text = _lastNetworkDetail,
                 Font = Theme.Font(7.7f),
                 ForeColor = Theme.Muted,
+                BackColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                TextAlign = ContentAlignment.MiddleLeft,
                 Location = new Point(ScaleValue(12), ScaleValue(25)),
                 Size = new Size(ScaleValue(212), ScaleValue(16)),
-                BackColor = Color.Transparent
+                TabStop = false,
+                UseVisualStyleBackColor = false
             };
-            _statusLabel.MouseDown += HeaderMouseDown;
+            _statusLabel.FlatAppearance.BorderSize = 0;
+            _statusLabel.FlatAppearance.MouseOverBackColor = Theme.PurpleSoft;
+            _statusLabel.FlatAppearance.MouseDownBackColor = Theme.PurpleSoft;
+            _statusLabel.Cursor = Cursors.Hand;
+            _statusLabel.AccessibleName = "连接电脑";
+            _statusLabel.Click += delegate { ShowConnectionSetup(); };
             header.Controls.Add(_statusLabel);
 
             _onlineLabel = new Label
@@ -275,7 +296,7 @@ namespace TransportHub.Desktop.Forms
             {
                 RefreshTimeline(true);
                 ScrollToLatest();
-                RecoverOrphanedLocalItemsAsync();
+                StartTrackedOperation(RecoverOrphanedLocalItemsAsync);
             };
             VisibleChanged += delegate
             {
@@ -288,6 +309,7 @@ namespace TransportHub.Desktop.Forms
 
             _transferService.ProgressChanged += TransferProgressChanged;
             _statusService.StatusChanged += SyncthingStatusChanged;
+            _connectionService.PendingDevicesChanged += ConnectionRequestsChanged;
 
             _refreshTimer = new System.Windows.Forms.Timer { Interval = 1500 };
             _refreshTimer.Tick += delegate
@@ -304,8 +326,7 @@ namespace TransportHub.Desktop.Forms
             _statusRestoreTimer.Tick += delegate
             {
                 _statusRestoreTimer.Stop();
-                _statusLabel.Text = _lastNetworkDetail;
-                _statusLabel.ForeColor = Theme.Muted;
+                RestoreHeaderStatus();
             };
 
             StartWatcher();
@@ -321,6 +342,19 @@ namespace TransportHub.Desktop.Forms
         internal int TransferProgress { get { return _transferProgress; } }
         internal Size DesiredExpandedSize { get { return new Size(ScaleValue(330), ScaleValue(480)); } }
 
+        internal void ShowConnectionSetup()
+        {
+            if (IsDisposed || Disposing || _shuttingDown)
+            {
+                return;
+            }
+            using (var dialog = new ConnectionForm(_context, _connectionService))
+            {
+                dialog.ShowDialog(this);
+            }
+            StartTrackedOperation(_statusService.RefreshAsync);
+        }
+
         internal void QueuePaths(IEnumerable<string> paths)
         {
             var snapshot = (paths ?? Enumerable.Empty<string>())
@@ -331,7 +365,7 @@ namespace TransportHub.Desktop.Forms
             {
                 return;
             }
-            SendPathsAsync(snapshot);
+            StartTrackedOperation(() => SendPathsAsync(snapshot));
         }
 
         internal void PromptForFiles()
@@ -398,12 +432,19 @@ namespace TransportHub.Desktop.Forms
                     }
                     if (payload.Kind == ClipboardPayloadKind.Image)
                     {
-                        SendClipboardImageAsync(payload);
+                        StartTrackedOperation(() => SendClipboardImageAsync(payload));
                         return true;
                     }
                     if (payload.Kind == ClipboardPayloadKind.Url)
                     {
-                        CreateLinkMessage(payload.Url.AbsoluteUri, payload.Text);
+                        if (IsLikelyImageUrl(payload.Url))
+                        {
+                            StartTrackedOperation(() => SendImageUrlAsync(payload.Url, payload.Text));
+                        }
+                        else
+                        {
+                            CreateLinkMessage(payload.Url.AbsoluteUri, payload.Text);
+                        }
                         return true;
                     }
                     if (payload.Kind == ClipboardPayloadKind.Text && _composer.Focused)
@@ -437,8 +478,15 @@ namespace TransportHub.Desktop.Forms
             if (disposing && !_resourcesDisposed)
             {
                 _resourcesDisposed = true;
+                _shuttingDown = true;
                 _lifetime.Cancel();
-                _lifetime.Dispose();
+                lock (_operationLock)
+                {
+                    if (_operations.Count == 0)
+                    {
+                        _lifetime.Dispose();
+                    }
+                }
                 _refreshTimer?.Stop();
                 _refreshTimer?.Dispose();
                 _statusRestoreTimer?.Stop();
@@ -450,6 +498,7 @@ namespace TransportHub.Desktop.Forms
                 }
                 _transferService.ProgressChanged -= TransferProgressChanged;
                 _statusService.StatusChanged -= SyncthingStatusChanged;
+                _connectionService.PendingDevicesChanged -= ConnectionRequestsChanged;
                 if (!_attachmentMenu.IsDisposed)
                 {
                     if (_attachmentMenu.Visible)
@@ -460,6 +509,27 @@ namespace TransportHub.Desktop.Forms
                 }
             }
             base.Dispose(disposing);
+        }
+
+        internal async Task ShutdownAsync(TimeSpan timeout)
+        {
+            Task[] operations;
+            lock (_operationLock)
+            {
+                _shuttingDown = true;
+                _lifetime.Cancel();
+                operations = _operations.ToArray();
+            }
+            if (operations.Length == 0)
+            {
+                return;
+            }
+            var completion = Task.WhenAll(operations);
+            var finished = await Task.WhenAny(completion, Task.Delay(timeout));
+            if (finished == completion)
+            {
+                try { await completion; } catch (OperationCanceledException) { }
+            }
         }
 
         private void StartWatcher()
@@ -527,7 +597,7 @@ namespace TransportHub.Desktop.Forms
                 }
                 try
                 {
-                    _timelineStore.CreateDeliveryReceipt(message.Id);
+                    _timelineStore.CreateDeliveryReceipt(message);
                 }
                 catch (Exception)
                 {
@@ -654,11 +724,21 @@ namespace TransportHub.Desktop.Forms
                 PathSafety.EnsureNoReparsePoints(_context.RootPath, candidate);
                 if (attachment.IsDirectory)
                 {
-                    return Directory.Exists(candidate) ? candidate : null;
+                    if (!Directory.Exists(candidate) || !_statusService.Current.FolderIdle)
+                    {
+                        return null;
+                    }
+                    if (String.IsNullOrWhiteSpace(attachment.Sha256))
+                    {
+                        return candidate;
+                    }
                 }
-                return File.Exists(candidate) && new FileInfo(candidate).Length == attachment.SizeBytes
-                    ? candidate
-                    : null;
+                else if (!File.Exists(candidate) || new FileInfo(candidate).Length != attachment.SizeBytes)
+                {
+                    return null;
+                }
+
+                return IsAttachmentVerified(candidate, attachment) ? candidate : null;
             }
             catch (Exception)
             {
@@ -668,15 +748,19 @@ namespace TransportHub.Desktop.Forms
 
         private void QueueReceiptBackfill()
         {
+            if (DateTime.UtcNow - _lastReceiptBackfillUtc < TimeSpan.FromMinutes(2))
+            {
+                return;
+            }
             if (Interlocked.Exchange(ref _backfillingReceipts, 1) != 0)
             {
                 return;
             }
-            Task.Run(delegate
+            TrackOperation(Task.Run(delegate
             {
                 try
                 {
-                    foreach (var message in _timelineStore.LoadRecentMessages(TimelineProtocol.MaximumRecentMessageCount))
+                    foreach (var message in _timelineStore.LoadAllMessagesForReceiptBackfill())
                     {
                         if (_lifetime.IsCancellationRequested || IsOutgoing(message))
                         {
@@ -690,7 +774,7 @@ namespace TransportHub.Desktop.Forms
                                 continue;
                             }
                         }
-                        _timelineStore.CreateDeliveryReceipt(message.Id);
+                        _timelineStore.CreateDeliveryReceipt(message);
                     }
                 }
                 catch (Exception)
@@ -699,9 +783,153 @@ namespace TransportHub.Desktop.Forms
                 }
                 finally
                 {
+                    _lastReceiptBackfillUtc = DateTime.UtcNow;
                     Interlocked.Exchange(ref _backfillingReceipts, 0);
                 }
+            }));
+        }
+
+        private bool IsAttachmentVerified(string candidate, TimelineAttachment attachment)
+        {
+            var info = attachment.IsDirectory ? null : new FileInfo(candidate);
+            var fingerprint = candidate + "|" + attachment.SizeBytes + "|" + attachment.Sha256 + "|" +
+                (info == null ? "directory" : info.LastWriteTimeUtc.Ticks.ToString());
+            AttachmentVerification state;
+            lock (_integrityLock)
+            {
+                if (!_attachmentVerifications.TryGetValue(candidate, out state))
+                {
+                    state = new AttachmentVerification();
+                    _attachmentVerifications[candidate] = state;
+                }
+                if (String.Equals(state.Fingerprint, fingerprint, StringComparison.Ordinal) &&
+                    state.Verified && state.VerifiedUntilUtc > DateTime.UtcNow)
+                {
+                    return true;
+                }
+                if (state.Running ||
+                    (String.Equals(state.Fingerprint, fingerprint, StringComparison.Ordinal) &&
+                     state.RetryAfterUtc > DateTime.UtcNow))
+                {
+                    return false;
+                }
+                state.Fingerprint = fingerprint;
+                state.Verified = false;
+                state.Running = true;
+            }
+
+            var verificationTask = Task.Run(delegate
+            {
+                var verified = false;
+                try
+                {
+                    string actualHash;
+                    if (attachment.IsDirectory)
+                    {
+                        actualHash = TransferService.ComputeDirectoryManifestSha256(candidate, _lifetime.Token);
+                    }
+                    else
+                    {
+                        actualHash = ComputeFileSha256(candidate, attachment.SizeBytes, _lifetime.Token);
+                    }
+                    verified = String.Equals(actualHash, attachment.Sha256, StringComparison.OrdinalIgnoreCase);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception)
+                {
+                }
+                finally
+                {
+                    lock (_integrityLock)
+                    {
+                        AttachmentVerification current;
+                        if (_attachmentVerifications.TryGetValue(candidate, out current) &&
+                            String.Equals(current.Fingerprint, fingerprint, StringComparison.Ordinal))
+                        {
+                            current.Running = false;
+                            current.Verified = verified;
+                            current.VerifiedUntilUtc = verified
+                                ? DateTime.UtcNow.Add(attachment.IsDirectory ? TimeSpan.FromMinutes(2) : TimeSpan.FromMinutes(10))
+                                : DateTime.MinValue;
+                            current.RetryAfterUtc = verified ? DateTime.MinValue : DateTime.UtcNow.AddSeconds(3);
+                        }
+                    }
+                    if (!_lifetime.IsCancellationRequested)
+                    {
+                        Interlocked.Exchange(ref _reloadPending, 1);
+                    }
+                }
             });
+            TrackOperation(verificationTask);
+            return false;
+        }
+
+        private static string ComputeFileSha256(string path, long expectedSize, CancellationToken cancellationToken)
+        {
+            using (var algorithm = SHA256.Create())
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                1024 * 1024, FileOptions.SequentialScan))
+            {
+                var buffer = new byte[1024 * 1024];
+                long total = 0;
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var read = stream.Read(buffer, 0, buffer.Length);
+                    if (read <= 0)
+                    {
+                        break;
+                    }
+                    algorithm.TransformBlock(buffer, 0, read, null, 0);
+                    total += read;
+                }
+                algorithm.TransformFinalBlock(new byte[0], 0, 0);
+                if (total != expectedSize)
+                {
+                    return String.Empty;
+                }
+                return BitConverter.ToString(algorithm.Hash).Replace("-", String.Empty).ToLowerInvariant();
+            }
+        }
+
+        private void StartTrackedOperation(Func<Task> operation)
+        {
+            if (operation == null || _shuttingDown || _resourcesDisposed)
+            {
+                return;
+            }
+            Task task;
+            try
+            {
+                task = operation();
+            }
+            catch (Exception exception)
+            {
+                ShowTransientStatus("操作失败：" + exception.Message, Theme.Red);
+                return;
+            }
+            TrackOperation(task);
+        }
+
+        private void TrackOperation(Task task)
+        {
+            if (task == null)
+            {
+                return;
+            }
+            lock (_operationLock)
+            {
+                _operations.Add(task);
+            }
+            task.ContinueWith(delegate
+            {
+                lock (_operationLock)
+                {
+                    _operations.Remove(task);
+                }
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
 
         private string BuildDeliveryText(TimelineMessage message, bool outgoing, DeliverySummary summary)
@@ -724,7 +952,7 @@ namespace TransportHub.Desktop.Forms
             return String.Equals(message.SenderDeviceId, _context.LocalDeviceId, StringComparison.OrdinalIgnoreCase);
         }
 
-        private async void SendPathsAsync(string[] paths)
+        private async Task SendPathsAsync(string[] paths)
         {
             foreach (var path in paths)
             {
@@ -751,7 +979,7 @@ namespace TransportHub.Desktop.Forms
                     ShowTransientStatus("发送失败：" + exception.Message, Theme.Red);
                     if (result != null)
                     {
-                        RecoverOrphanedLocalItemsAsync();
+                        StartTrackedOperation(RecoverOrphanedLocalItemsAsync);
                     }
                 }
                 finally
@@ -761,7 +989,7 @@ namespace TransportHub.Desktop.Forms
             }
         }
 
-        private async void SendClipboardImageAsync(ClipboardPayload payload)
+        private async Task SendClipboardImageAsync(ClipboardPayload payload)
         {
             try
             {
@@ -791,6 +1019,164 @@ namespace TransportHub.Desktop.Forms
             finally
             {
                 EndTransfer();
+            }
+        }
+
+        private async Task SendImageUrlAsync(Uri url, string clipboardText)
+        {
+            try
+            {
+                BeginTransfer("网络图片");
+                byte[] bytes;
+                string mediaType;
+                Uri finalUri;
+                var download = await DownloadImageAsync(url, _lifetime.Token).ConfigureAwait(true);
+                bytes = download.Bytes;
+                mediaType = download.MediaType;
+                finalUri = download.FinalUri;
+                var extension = ExtensionForImageMediaType(mediaType);
+                var leaf = Path.GetFileName(Uri.UnescapeDataString(finalUri.AbsolutePath));
+                var name = String.IsNullOrWhiteSpace(leaf)
+                    ? "网络图片-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + extension
+                    : leaf;
+                if (String.IsNullOrWhiteSpace(Path.GetExtension(name)))
+                {
+                    name += extension;
+                }
+                var result = await _transferService.SendBytesAsync(bytes, name, mediaType, _lifetime.Token);
+                _timelineStore.CreateAttachment(result.RelativePath, result.MimeType, result.Size,
+                    result.Sha256, TargetDeviceIds());
+                Interlocked.Exchange(ref _reloadPending, 1);
+                RefreshTimeline(true);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception exception)
+            {
+                CreateLinkMessage(url.AbsoluteUri,
+                    String.IsNullOrWhiteSpace(clipboardText) ? url.AbsoluteUri : clipboardText);
+                ShowTransientStatus("图片下载失败，已作为链接发送：" + exception.Message, Theme.Amber);
+            }
+            finally
+            {
+                EndTransfer();
+            }
+        }
+
+        private static async Task<ImageDownload> DownloadImageAsync(Uri initialUri, CancellationToken cancellationToken)
+        {
+            const int maximumBytes = 100 * 1024 * 1024;
+            var handler = new HttpClientHandler { AllowAutoRedirect = false };
+            using (handler)
+            using (var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) })
+            {
+                var current = initialUri;
+                for (var redirect = 0; redirect <= 3; redirect++)
+                {
+                    await EnsurePublicHttpUriAsync(current).ConfigureAwait(false);
+                    using (var response = await client.GetAsync(current,
+                        HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false))
+                    {
+                        if ((int)response.StatusCode >= 300 && (int)response.StatusCode < 400 && response.Headers.Location != null)
+                        {
+                            current = response.Headers.Location.IsAbsoluteUri
+                                ? response.Headers.Location
+                                : new Uri(current, response.Headers.Location);
+                            continue;
+                        }
+                        response.EnsureSuccessStatusCode();
+                        var mediaType = response.Content.Headers.ContentType == null
+                            ? String.Empty
+                            : response.Content.Headers.ContentType.MediaType;
+                        if (String.IsNullOrWhiteSpace(mediaType) ||
+                            !mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new InvalidDataException("链接返回的内容不是图片。");
+                        }
+                        if (response.Content.Headers.ContentLength.HasValue &&
+                            response.Content.Headers.ContentLength.Value > maximumBytes)
+                        {
+                            throw new InvalidDataException("网络图片超过 100 MB 限制。");
+                        }
+                        using (var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
+                        using (var output = new MemoryStream())
+                        {
+                            var buffer = new byte[128 * 1024];
+                            while (true)
+                            {
+                                cancellationToken.ThrowIfCancellationRequested();
+                                var read = await input.ReadAsync(buffer, 0, buffer.Length, cancellationToken).ConfigureAwait(false);
+                                if (read <= 0) break;
+                                if (output.Length + read > maximumBytes)
+                                {
+                                    throw new InvalidDataException("网络图片超过 100 MB 限制。");
+                                }
+                                await output.WriteAsync(buffer, 0, read, cancellationToken).ConfigureAwait(false);
+                            }
+                            return new ImageDownload { Bytes = output.ToArray(), MediaType = mediaType, FinalUri = current };
+                        }
+                    }
+                }
+            }
+            throw new InvalidDataException("网络图片重定向次数过多。");
+        }
+
+        private static async Task EnsurePublicHttpUriAsync(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+                String.IsNullOrWhiteSpace(uri.DnsSafeHost))
+            {
+                throw new InvalidDataException("图片链接无效。");
+            }
+            var addresses = await Dns.GetHostAddressesAsync(uri.DnsSafeHost).ConfigureAwait(false);
+            if (addresses.Length == 0 || addresses.Any(IsPrivateAddress))
+            {
+                throw new InvalidDataException("出于安全原因，不能下载本机或内网地址的图片。");
+            }
+        }
+
+        private static bool IsPrivateAddress(IPAddress address)
+        {
+            if (IPAddress.IsLoopback(address) || address.Equals(IPAddress.IPv6Any) ||
+                address.Equals(IPAddress.IPv6None) || address.IsIPv6LinkLocal ||
+                address.IsIPv6SiteLocal || address.IsIPv6Multicast)
+            {
+                return true;
+            }
+            if (address.IsIPv4MappedToIPv6)
+            {
+                address = address.MapToIPv4();
+            }
+            var bytes = address.GetAddressBytes();
+            if (bytes.Length == 16)
+            {
+                return (bytes[0] & 0xFE) == 0xFC;
+            }
+            return bytes[0] == 0 || bytes[0] == 10 || bytes[0] == 127 || bytes[0] >= 224 ||
+                (bytes[0] == 169 && bytes[1] == 254) ||
+                (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
+                (bytes[0] == 192 && bytes[1] == 168) ||
+                (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127);
+        }
+
+        private static bool IsLikelyImageUrl(Uri uri)
+        {
+            var extension = Path.GetExtension(uri == null ? String.Empty : uri.AbsolutePath).ToLowerInvariant();
+            return new[] { ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff" }.Contains(extension);
+        }
+
+        private static string ExtensionForImageMediaType(string mediaType)
+        {
+            switch ((mediaType ?? String.Empty).ToLowerInvariant())
+            {
+                case "image/jpeg": return ".jpg";
+                case "image/gif": return ".gif";
+                case "image/webp": return ".webp";
+                case "image/bmp": return ".bmp";
+                case "image/tiff": return ".tiff";
+                default: return ".png";
             }
         }
 
@@ -863,7 +1249,7 @@ namespace TransportHub.Desktop.Forms
             return devices.OrderBy(value => value, StringComparer.Ordinal).ToArray();
         }
 
-        private async void RecoverOrphanedLocalItemsAsync()
+        private async Task RecoverOrphanedLocalItemsAsync()
         {
             if (Interlocked.Exchange(ref _recoveringOrphans, 1) != 0)
             {
@@ -933,7 +1319,12 @@ namespace TransportHub.Desktop.Forms
                     if ((attributes & FileAttributes.Directory) != 0)
                     {
                         var size = ComputeSafeDirectorySize(candidate, cancellationToken);
-                        _timelineStore.CreateAttachment(relative, "inode/directory", size, String.Empty, targets);
+                        var hash = TransferService.ComputeDirectoryManifestSha256(candidate, cancellationToken);
+                        if (ComputeSafeDirectorySize(candidate, cancellationToken) != size)
+                        {
+                            continue;
+                        }
+                        _timelineStore.CreateAttachment(relative, "inode/directory", size, hash, targets);
                     }
                     else
                     {
@@ -1019,6 +1410,22 @@ namespace TransportHub.Desktop.Forms
             RaiseStateChanged();
         }
 
+        private sealed class AttachmentVerification
+        {
+            internal string Fingerprint { get; set; }
+            internal bool Running { get; set; }
+            internal bool Verified { get; set; }
+            internal DateTime VerifiedUntilUtc { get; set; }
+            internal DateTime RetryAfterUtc { get; set; }
+        }
+
+        private sealed class ImageDownload
+        {
+            internal byte[] Bytes { get; set; }
+            internal string MediaType { get; set; }
+            internal Uri FinalUri { get; set; }
+        }
+
         private void EndTransfer()
         {
             _activeTransfers = Math.Max(0, _activeTransfers - 1);
@@ -1045,6 +1452,11 @@ namespace TransportHub.Desktop.Forms
             PostToUi(UpdateNetworkStatus);
         }
 
+        private void ConnectionRequestsChanged(object sender, EventArgs e)
+        {
+            PostToUi(RestoreHeaderStatus);
+        }
+
         private void UpdateNetworkStatus()
         {
             var status = _statusService.Current;
@@ -1055,8 +1467,7 @@ namespace TransportHub.Desktop.Forms
             }
             if (!_statusRestoreTimer.Enabled && _activeTransfers == 0)
             {
-                _statusLabel.Text = _lastNetworkDetail;
-                _statusLabel.ForeColor = Theme.Muted;
+                RestoreHeaderStatus();
             }
             if (!status.Running)
             {
@@ -1081,6 +1492,25 @@ namespace TransportHub.Desktop.Forms
                 _layoutHeader();
             }
             RaiseStateChanged();
+        }
+
+        private void RestoreHeaderStatus()
+        {
+            if (_activeTransfers > 0)
+            {
+                return;
+            }
+            var pending = _connectionService.PendingDevices;
+            if (pending.Count > 0)
+            {
+                _statusLabel.Text = pending.Count == 1
+                    ? pending[0].Name + " 请求连接 · 点击处理"
+                    : pending.Count + " 台电脑请求连接 · 点击处理";
+                _statusLabel.ForeColor = Theme.Purple;
+                return;
+            }
+            _statusLabel.Text = _lastNetworkDetail;
+            _statusLabel.ForeColor = Theme.Muted;
         }
 
         private void ShowTransientStatus(string text, Color color)

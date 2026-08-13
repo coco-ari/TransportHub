@@ -57,11 +57,35 @@ jobs:
       - name: Build and verify installer
         shell: powershell
         run: |
-          .\scripts\package-release.ps1 -Version 0.1.0
-          $setup = '.\artifacts\release\TransportHub-Setup-v0.1.0.exe'
+          .\scripts\package-release.ps1
+          $setups = @(Get-ChildItem -LiteralPath '.\artifacts\release' -Filter 'TransportHub-Setup-v*.exe' -File)
           $checksums = '.\artifacts\release\SHA256SUMS.txt'
-          if (-not (Test-Path -LiteralPath $setup -PathType Leaf) -or
+          if ($setups.Count -ne 1 -or
               -not (Test-Path -LiteralPath $checksums -PathType Leaf)) {
             throw 'Installer packaging did not create the expected release assets.'
           }
           Get-Content -LiteralPath $checksums
+
+      - name: Verify bootstrap failure is atomic
+        shell: powershell
+        run: |
+          $setup = @(Get-ChildItem -LiteralPath '.\artifacts\release' -Filter 'TransportHub-Setup-v*.exe' -File)
+          $installRoot = Join-Path $env:LOCALAPPDATA 'Programs\TransportHub'
+          if (Test-Path -LiteralPath $installRoot) {
+            throw "Unexpected pre-existing install root: $installRoot"
+          }
+          $startInfo = [Diagnostics.ProcessStartInfo]::new()
+          $startInfo.FileName = $setup[0].FullName
+          $startInfo.Arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+          $startInfo.UseShellExecute = $false
+          $startInfo.EnvironmentVariables['OS'] = 'INJECTED_FAILURE'
+          $process = [Diagnostics.Process]::Start($startInfo)
+          if (-not $process.WaitForExit(30000)) {
+            throw 'Failure-injection setup timed out.'
+          }
+          if ($process.ExitCode -eq 0) {
+            throw 'The installer reported success after an injected bootstrap failure.'
+          }
+          if (Test-Path -LiteralPath $installRoot) {
+            throw 'The installer left files behind after an injected bootstrap failure.'
+          }

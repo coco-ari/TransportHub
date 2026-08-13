@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter()]
     [ValidateNotNullOrEmpty()]
@@ -443,7 +443,16 @@ if (Test-Path -LiteralPath $normalizedFolderPath -PathType Container) {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
-        $deviceDropDirectory = Join-Path -Path $normalizedFolderPath -ChildPath $env:COMPUTERNAME
+        $machineDirectoryName = $env:COMPUTERNAME.Trim() -replace '[<>:"/\\|?*]', '_'
+        $machineDirectoryName = $machineDirectoryName.TrimEnd([char[]] @(' ', '.'))
+        $machineDirectoryBase = if ([string]::IsNullOrWhiteSpace($machineDirectoryName)) { 'device' } else { $machineDirectoryName }
+        $deviceDirectoryName = if ($deviceId.Length -ge 7) {
+            $machineDirectoryBase + '-' + $deviceId.Substring(0, 7)
+        }
+        else {
+            $machineDirectoryBase
+        }
+        $deviceDropDirectory = Join-Path -Path $normalizedFolderPath -ChildPath $deviceDirectoryName
         if (Test-Path -LiteralPath $deviceDropDirectory -PathType Container) {
             Write-CheckResult -Level PASS -Message ('Per-computer drop directory exists: {0}' -f $deviceDropDirectory)
         }

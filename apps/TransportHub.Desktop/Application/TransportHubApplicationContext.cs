@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using TransportHub.Desktop.Core;
@@ -22,6 +23,7 @@ namespace TransportHub.Desktop.Application
         private readonly TimelineStore _timelineStore;
         private readonly TransferService _transferService;
         private readonly SyncthingStatusService _statusService;
+        private readonly ConnectionService _connectionService;
         private readonly MainForm _mainForm;
         private readonly EdgeButtonForm _edgeButton;
         private readonly NotifyIcon _notifyIcon;
@@ -40,7 +42,8 @@ namespace TransportHub.Desktop.Application
                 _syncthing.LocalDeviceName);
             _transferService = new TransferService(_syncthing);
             _statusService = new SyncthingStatusService(_syncthing);
-            _mainForm = new MainForm(_syncthing, _timelineStore, _transferService, _statusService);
+            _connectionService = new ConnectionService(_syncthing);
+            _mainForm = new MainForm(_syncthing, _timelineStore, _transferService, _statusService, _connectionService);
             _edgeButton = new EdgeButtonForm();
 
             _trayMenu = BuildTrayMenu();
@@ -87,6 +90,7 @@ namespace TransportHub.Desktop.Application
             }
 
             _statusService.Start();
+            _connectionService.Start();
             UpdateEdgeState();
         }
 
@@ -110,6 +114,7 @@ namespace TransportHub.Desktop.Application
                 }
                 _edgeButton.Dispose();
                 _mainForm.Dispose();
+                _connectionService.Dispose();
                 _statusService.Dispose();
             }
             base.Dispose(disposing);
@@ -136,6 +141,11 @@ namespace TransportHub.Desktop.Application
                 _mainForm.PromptForFolder();
             });
             menu.Items.Add("打开同步目录", null, delegate { OpenSyncRoot(); });
+            menu.Items.Add("连接电脑…", null, delegate
+            {
+                ShowMain();
+                _mainForm.ShowConnectionSetup();
+            });
             menu.Items.Add("Syncthing 状态", null, delegate { _statusService.OpenWebGui(); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出 TransportHub", null, delegate { ExitApplication(); });
@@ -188,6 +198,21 @@ namespace TransportHub.Desktop.Application
             _mainForm.BringToFront();
             _mainForm.MarkRead();
             SaveWindowSettings(_mainForm.Bounds, false);
+        }
+
+        internal void ActivateFromExternalLaunch()
+        {
+            if (_exiting || _mainForm.IsDisposed || _mainForm.Disposing || !_mainForm.IsHandleCreated)
+            {
+                return;
+            }
+            try
+            {
+                _mainForm.BeginInvoke((Action)ShowMain);
+            }
+            catch (InvalidOperationException)
+            {
+            }
         }
 
         private void HideToTray()
@@ -270,7 +295,7 @@ namespace TransportHub.Desktop.Application
             Process.Start(new ProcessStartInfo(_syncthing.RootPath) { UseShellExecute = true });
         }
 
-        private void ExitApplication(bool closeMainForm = true)
+        private async void ExitApplication(bool closeMainForm = true)
         {
             if (_exiting)
             {
@@ -281,6 +306,7 @@ namespace TransportHub.Desktop.Application
             SaveWindowSettings(bounds, _collapsed);
             _notifyIcon.Visible = false;
             _edgeButton.Hide();
+            await _mainForm.ShutdownAsync(TimeSpan.FromSeconds(30));
             if (closeMainForm && !_mainForm.IsDisposed)
             {
                 _mainForm.RequestCloseForExit();
