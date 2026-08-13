@@ -738,6 +738,15 @@ namespace TransportHub.Desktop.Forms
                         item.LinkRequested += TimelineLinkRequested;
                         _timeline.Controls.Add(item);
                     }
+
+                    _timeline.Controls.Add(new Panel
+                    {
+                        BackColor = Theme.Surface,
+                        Height = ScaleValue(14),
+                        Width = TimelineContentWidth(),
+                        Margin = new Padding(0),
+                        TabStop = false
+                    });
                 }
             }
             finally
@@ -1703,6 +1712,7 @@ namespace TransportHub.Desktop.Forms
         {
             if (_timeline.Controls.Count > 0)
             {
+                _timeline.PerformLayout();
                 _timeline.ScrollControlIntoView(_timeline.Controls[_timeline.Controls.Count - 1]);
             }
         }

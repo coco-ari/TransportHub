@@ -21,6 +21,17 @@ namespace TransportHub.Desktop.UI
         internal string Value { get; private set; }
     }
 
+    internal sealed class TimelineItemLayoutSnapshot
+    {
+        internal Rectangle ContentBounds { get; set; }
+        internal Rectangle MetadataBounds { get; set; }
+        internal Rectangle AttachmentNameBounds { get; set; }
+        internal Rectangle AttachmentDetailBounds { get; set; }
+        internal int AttachmentNameLineHeight { get; set; }
+        internal int AttachmentDetailLineHeight { get; set; }
+        internal int ControlHeight { get; set; }
+    }
+
     /// <summary>
     /// UI-only adapter for one timeline row. Persistence models should be mapped
     /// to this type by the form instead of coupling this control to storage code.
@@ -180,6 +191,21 @@ namespace TransportHub.Desktop.UI
             Width = width;
             calculatedForWidth = -1;
             RecalculateHeight();
+        }
+
+        internal TimelineItemLayoutSnapshot GetLayoutSnapshotForTesting()
+        {
+            CalculateLayout(ClientSize.Width > 0 ? ClientSize.Width : Width);
+            return new TimelineItemLayoutSnapshot
+            {
+                ContentBounds = contentBounds,
+                MetadataBounds = metaBounds,
+                AttachmentNameBounds = attachmentNameBounds,
+                AttachmentDetailBounds = attachmentDetailBounds,
+                AttachmentNameLineHeight = MeasureLineHeight(attachmentNameFont),
+                AttachmentDetailLineHeight = MeasureLineHeight(metaFont),
+                ControlHeight = Height
+            };
         }
 
         public override Size GetPreferredSize(Size proposedSize)
@@ -451,7 +477,7 @@ namespace TransportHub.Desktop.UI
             var contentWidth = Math.Max(ScaleLogical(60), bubbleWidth - bubblePadding * 2);
 
             var hasSender = !string.IsNullOrWhiteSpace(senderText);
-            var senderHeight = hasSender ? Math.Max(senderFont.Height, ScaleLogical(14)) : 0;
+            var senderHeight = hasSender ? Math.Max(MeasureLineHeight(senderFont), ScaleLogical(14)) : 0;
             var contentHeight = MeasureAndPlaceContent(contentWidth);
             var bubbleHeight = bubblePadding + contentHeight + bubblePadding;
             if (hasSender)
@@ -479,7 +505,7 @@ namespace TransportHub.Desktop.UI
                 contentWidth,
                 contentHeight);
 
-            var metaHeight = Math.Max(metaFont.Height, ScaleLogical(13));
+            var metaHeight = Math.Max(MeasureLineHeight(metaFont), ScaleLogical(13));
             metaBounds = new Rectangle(
                 bubbleBounds.Left,
                 bubbleBounds.Bottom + metaGap,
@@ -535,24 +561,36 @@ namespace TransportHub.Desktop.UI
                     return Math.Max(font.Height, contentBounds.Height);
 
                 case PresentationKind.Attachment:
-                    var attachmentHeight = ScaleLogical(48);
+                    var attachmentPadding = ScaleLogical(6);
+                    var attachmentLineGap = ScaleLogical(3);
+                    var attachmentNameHeight = Math.Max(
+                        MeasureLineHeight(attachmentNameFont),
+                        ScaleLogical(18));
+                    var attachmentDetailHeight = Math.Max(
+                        MeasureLineHeight(metaFont),
+                        ScaleLogical(15));
+                    var textBlockHeight = attachmentNameHeight + attachmentLineGap + attachmentDetailHeight;
+                    var attachmentIconHeight = ScaleLogical(36);
+                    var attachmentHeight = Math.Max(
+                        attachmentIconHeight + attachmentPadding * 2,
+                        textBlockHeight + attachmentPadding * 2);
                     contentBounds = new Rectangle(0, 0, contentWidth, attachmentHeight);
                     revealHitBounds = contentBounds;
                     attachmentIconBounds = new Rectangle(
                         ScaleLogical(5),
-                        ScaleLogical(6),
+                        (attachmentHeight - attachmentIconHeight) / 2,
                         ScaleLogical(32),
-                        ScaleLogical(36));
+                        attachmentIconHeight);
                     attachmentNameBounds = new Rectangle(
                         attachmentIconBounds.Right + ScaleLogical(9),
-                        ScaleLogical(5),
+                        attachmentPadding,
                         Math.Max(ScaleLogical(20), contentWidth - attachmentIconBounds.Right - ScaleLogical(13)),
-                        ScaleLogical(21));
+                        attachmentNameHeight);
                     attachmentDetailBounds = new Rectangle(
                         attachmentNameBounds.Left,
-                        attachmentNameBounds.Bottom,
+                        attachmentNameBounds.Bottom + attachmentLineGap,
                         attachmentNameBounds.Width,
-                        ScaleLogical(17));
+                        attachmentDetailHeight);
                     return attachmentHeight;
 
                 case PresentationKind.Image:
@@ -564,7 +602,9 @@ namespace TransportHub.Desktop.UI
                     {
                         imageName = string.Empty;
                     }
-                    var nameHeight = string.IsNullOrWhiteSpace(imageName) ? 0 : ScaleLogical(22);
+                    var nameHeight = string.IsNullOrWhiteSpace(imageName)
+                        ? 0
+                        : Math.Max(MeasureLineHeight(metaFont), ScaleLogical(18));
                     attachmentNameBounds = new Rectangle(
                         0,
                         thumbnailBounds.Bottom + (nameHeight == 0 ? 0 : ScaleLogical(3)),
@@ -1267,6 +1307,16 @@ namespace TransportHub.Desktop.UI
                 font,
                 Size.Empty,
                 TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+        }
+
+        private static int MeasureLineHeight(Font font)
+        {
+            var measured = TextRenderer.MeasureText(
+                "国Ag",
+                font,
+                Size.Empty,
+                TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+            return Math.Max(font.Height, measured.Height);
         }
 
         private static string FormatTimestamp(DateTime timestamp)

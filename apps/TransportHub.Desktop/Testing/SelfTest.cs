@@ -9,6 +9,7 @@ using System.Threading;
 using TransportHub.Desktop.Core;
 using TransportHub.Desktop.Models;
 using TransportHub.Desktop.Services;
+using TransportHub.Desktop.UI;
 
 namespace TransportHub.Desktop.Testing
 {
@@ -31,6 +32,7 @@ namespace TransportHub.Desktop.Testing
                 RunConnectionCodeScenario(lines);
                 RunTransferRateFormattingScenario(lines);
                 RunIncomingTransferScenario(lines);
+                RunTimelineLayoutScenario(lines);
                 lines.Add("PASS: all TransportHub self-tests completed");
                 WriteResult(lines, true);
                 return 0;
@@ -179,6 +181,38 @@ namespace TransportHub.Desktop.Testing
             Assert(SyncthingStatusService.ParseIncomingTransfers("not-json", "transporthub-data").Count == 0,
                 "Malformed download progress was not isolated.");
             lines.Add("PASS: incoming file card progress and metadata isolation");
+        }
+
+        private static void RunTimelineLayoutScenario(ICollection<string> lines)
+        {
+            using (var control = new TimelineItemControl(new TimelineItemViewModel
+            {
+                MessageId = "layout-test",
+                Kind = TimelineMessageKind.Attachment,
+                IsOutgoing = false,
+                SenderName = "测试电脑",
+                RelativePath = "测试电脑/新概念1.pdf",
+                MimeType = "application/pdf",
+                SizeBytes = 9633792,
+                AttachmentProgress = "同步中",
+                Timestamp = DateTime.Now,
+                DeliverySummary = String.Empty
+            }))
+            {
+                control.SetAvailableWidth(420);
+                var layout = control.GetLayoutSnapshotForTesting();
+                Assert(layout.AttachmentNameBounds.Height >= layout.AttachmentNameLineHeight,
+                    "Attachment title height did not accommodate the rendered font.");
+                Assert(layout.AttachmentDetailBounds.Height >= layout.AttachmentDetailLineHeight,
+                    "Attachment detail height did not accommodate the rendered font.");
+                Assert(layout.AttachmentNameBounds.Bottom < layout.AttachmentDetailBounds.Top,
+                    "Attachment title and detail rows overlap.");
+                Assert(layout.AttachmentDetailBounds.Bottom <= layout.ContentBounds.Bottom,
+                    "Attachment detail text extends beyond its card.");
+                Assert(layout.MetadataBounds.Bottom <= layout.ControlHeight,
+                    "Timeline timestamp extends beyond the item control.");
+            }
+            lines.Add("PASS: attachment fonts and timestamp fit without overlap");
         }
 
         private static void RunRecentSelectionScenario(string root, ICollection<string> lines)
