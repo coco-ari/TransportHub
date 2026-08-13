@@ -21,7 +21,31 @@ namespace TransportHub.Desktop.Services
         internal bool FolderIdle { get; set; }
         internal long DownloadBytesPerSecond { get; set; }
         internal long UploadBytesPerSecond { get; set; }
+        internal IReadOnlyList<IncomingTransferInfo> IncomingTransfers { get; set; }
         internal string Detail { get; set; }
+    }
+
+    internal sealed class IncomingTransferInfo
+    {
+        internal string RelativePath { get; set; }
+        internal string SenderName { get; set; }
+        internal string FileName { get; set; }
+        internal long BytesTotal { get; set; }
+        internal long BytesDone { get; set; }
+
+        internal int Percent
+        {
+            get
+            {
+                if (BytesTotal <= 0L)
+                {
+                    return 0;
+                }
+                var percent = Math.Round(BytesDone * 100d / BytesTotal,
+                    MidpointRounding.AwayFromZero);
+                return (int)Math.Max(0d, Math.Min(100d, percent));
+            }
+        }
     }
 
     internal sealed class SyncthingStatusService : IDisposable
@@ -57,6 +81,7 @@ namespace TransportHub.Desktop.Services
                 OnlineDevices = 0,
                 TotalDevices = context.TargetDevices.Count,
                 FolderIdle = false,
+                IncomingTransfers = new List<IncomingTransferInfo>(),
                 Detail = "正在连接 Syncthing"
             };
         }
@@ -86,6 +111,7 @@ namespace TransportHub.Desktop.Services
                 _context.RefreshTargetDevices();
                 var statusResponse = await _client.GetStringAsync("rest/system/status").ConfigureAwait(false);
                 var connectionsResponse = await _client.GetStringAsync("rest/system/connections").ConfigureAwait(false);
+                var incomingTransfers = await GetIncomingTransfersAsync().ConfigureAwait(false);
                 string folderResponse = null;
                 try
                 {
@@ -133,6 +159,7 @@ namespace TransportHub.Desktop.Services
                     FolderIdle = identityMatches && idle,
                     DownloadBytesPerSecond = downloadBytesPerSecond,
                     UploadBytesPerSecond = uploadBytesPerSecond,
+                    IncomingTransfers = incomingTransfers,
                     Detail = detail
                 });
             }
@@ -144,6 +171,7 @@ namespace TransportHub.Desktop.Services
                     OnlineDevices = 0,
                     TotalDevices = _context.TargetDevices.Count,
                     FolderIdle = false,
+                    IncomingTransfers = new List<IncomingTransferInfo>(),
                     Detail = "Syncthing 未运行 · 内容会先保存在本机"
                 });
             }
@@ -318,6 +346,116 @@ namespace TransportHub.Desktop.Services
                 }
             }
             return true;
+        }
+
+        private async Task<IReadOnlyList<IncomingTransferInfo>> GetIncomingTransfersAsync()
+        {
+            try
+            {
+                var response = await _client.GetStringAsync(
+                    "rest/events?events=DownloadProgress&limit=1&timeout=0").ConfigureAwait(false);
+                return ParseIncomingTransfers(response, _context.FolderId);
+            }
+            catch (Exception)
+            {
+                return new List<IncomingTransferInfo>();
+            }
+        }
+
+        internal static IReadOnlyList<IncomingTransferInfo> ParseIncomingTransfers(string response, string folderId)
+        {
+            try
+            {
+                var serializer = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
+                var events = serializer.DeserializeObject(response ?? String.Empty) as IEnumerable;
+                if (events == null)
+                {
+                    return new List<IncomingTransferInfo>();
+                }
+                var latest = events.Cast<object>().LastOrDefault() as IDictionary<string, object>;
+                object rawData;
+                var data = latest != null && latest.TryGetValue("data", out rawData)
+                    ? AsDictionary(rawData)
+                    : null;
+                object rawFolder;
+                var folder = data != null && !String.IsNullOrWhiteSpace(folderId) &&
+                    data.TryGetValue(folderId, out rawFolder)
+                    ? AsDictionary(rawFolder)
+                    : null;
+                if (folder == null)
+                {
+                    return new List<IncomingTransferInfo>();
+                }
+
+                var result = new List<IncomingTransferInfo>();
+                foreach (var pair in folder.OrderBy(item => item.Key, StringComparer.CurrentCultureIgnoreCase))
+                {
+                    string relativePath;
+                    if (!TryNormalizeIncomingPath(pair.Key, out relativePath))
+                    {
+                        continue;
+                    }
+                    var progress = AsDictionary(pair.Value);
+                    var bytesTotal = GetLong(progress, "bytesTotal");
+                    var bytesDone = Math.Min(bytesTotal, GetLong(progress, "bytesDone"));
+                    if (bytesTotal <= 0L)
+                    {
+                        continue;
+                    }
+                    var segments = relativePath.Split('/');
+                    result.Add(new IncomingTransferInfo
+                    {
+                        RelativePath = relativePath,
+                        SenderName = segments.Length > 1 ? SafeDisplayText(segments[0], "其他电脑") : "其他电脑",
+                        FileName = SafeDisplayText(segments[segments.Length - 1], "正在接收的文件"),
+                        BytesTotal = bytesTotal,
+                        BytesDone = bytesDone
+                    });
+                    if (result.Count >= 8)
+                    {
+                        break;
+                    }
+                }
+                return result;
+            }
+            catch (Exception)
+            {
+                return new List<IncomingTransferInfo>();
+            }
+        }
+
+        private static bool TryNormalizeIncomingPath(string value, out string normalized)
+        {
+            normalized = String.Empty;
+            var path = (value ?? String.Empty).Trim().Replace('\\', '/');
+            if (path.Length == 0 || path.Length > 4096 || path.StartsWith("/", StringComparison.Ordinal) ||
+                path.StartsWith(".transporthub/", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith(".stversions/", StringComparison.OrdinalIgnoreCase) ||
+                path.IndexOf('\0') >= 0)
+            {
+                return false;
+            }
+            var segments = path.Split('/');
+            if (segments.Any(segment => String.IsNullOrWhiteSpace(segment) || segment == "." || segment == ".."))
+            {
+                return false;
+            }
+            normalized = String.Join("/", segments);
+            return true;
+        }
+
+        private static string SafeDisplayText(string value, string fallback)
+        {
+            var characters = (value ?? String.Empty).Where(character =>
+                !Char.IsControl(character) && character != '\u202A' && character != '\u202B' &&
+                character != '\u202D' && character != '\u202E' && character != '\u2066' &&
+                character != '\u2067' && character != '\u2068' && character != '\u2069').ToArray();
+            var result = new String(characters).Trim();
+            if (String.IsNullOrWhiteSpace(result))
+            {
+                return fallback;
+            }
+            return result.Length <= 96 ? result : result.Substring(0, 93) + "...";
         }
 
         private static IDictionary<string, object> AsDictionary(object value)

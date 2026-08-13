@@ -30,6 +30,7 @@ namespace TransportHub.Desktop.Testing
                 RunPathSafetyScenario(root, lines);
                 RunConnectionCodeScenario(lines);
                 RunTransferRateFormattingScenario(lines);
+                RunIncomingTransferScenario(lines);
                 lines.Add("PASS: all TransportHub self-tests completed");
                 WriteResult(lines, true);
                 return 0;
@@ -160,6 +161,24 @@ namespace TransportHub.Desktop.Testing
             Assert(SyncthingStatusService.FormatTransferRates(2048, 1048576) == "↓ 2 KB/s · ↑ 1.0 MB/s",
                 "Bidirectional speed formatting was incorrect.");
             lines.Add("PASS: compact live transfer-rate formatting");
+        }
+
+        private static void RunIncomingTransferScenario(ICollection<string> lines)
+        {
+            const string response = "[{\"id\":9,\"type\":\"DownloadProgress\",\"data\":{" +
+                "\"transporthub-data\":{" +
+                "\"OFFICE-PC\\\\report.zip\":{\"bytesTotal\":3315394829,\"bytesDone\":1657697414}," +
+                "\".transporthub\\\\secret.json\":{\"bytesTotal\":120,\"bytesDone\":20}" +
+                "}}}]";
+            var transfers = SyncthingStatusService.ParseIncomingTransfers(response, "transporthub-data");
+            Assert(transfers.Count == 1, "Protocol metadata appeared as an incoming file card.");
+            Assert(transfers[0].SenderName == "OFFICE-PC" && transfers[0].FileName == "report.zip",
+                "Incoming transfer sender or file name was parsed incorrectly.");
+            Assert(transfers[0].BytesTotal == 3315394829L && transfers[0].Percent == 50,
+                "Incoming transfer bytes or percentage was parsed incorrectly.");
+            Assert(SyncthingStatusService.ParseIncomingTransfers("not-json", "transporthub-data").Count == 0,
+                "Malformed download progress was not isolated.");
+            lines.Add("PASS: incoming file card progress and metadata isolation");
         }
 
         private static void RunRecentSelectionScenario(string root, ICollection<string> lines)

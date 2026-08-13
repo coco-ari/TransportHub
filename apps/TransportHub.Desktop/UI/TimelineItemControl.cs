@@ -38,6 +38,7 @@ namespace TransportHub.Desktop.UI
         internal string AbsolutePath { get; set; }
         internal string MimeType { get; set; }
         internal long SizeBytes { get; set; }
+        internal string AttachmentProgress { get; set; }
         internal DateTime Timestamp { get; set; }
         internal string DeliverySummary { get; set; }
     }
@@ -1015,6 +1016,13 @@ namespace TransportHub.Desktop.UI
             var size = item.SizeBytes >= 0
                 ? FormatBytes(item.SizeBytes)
                 : string.Empty;
+            var progress = string.IsNullOrWhiteSpace(item.AttachmentProgress)
+                ? string.Empty
+                : item.AttachmentProgress.Trim();
+            if (progress.Length > 0)
+            {
+                return size.Length == 0 ? progress : size + "  ·  " + progress;
+            }
             if (HasRevealTarget())
             {
                 return size;

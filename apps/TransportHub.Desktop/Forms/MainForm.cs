@@ -608,6 +608,11 @@ namespace TransportHub.Desktop.Forms
 
             var viewModels = new List<TimelineItemViewModel>();
             var signatureParts = new List<string>();
+            var incomingTransfers = (_statusService.Current.IncomingTransfers ??
+                new List<IncomingTransferInfo>()).ToDictionary(
+                    item => item.RelativePath.Replace('\\', '/'),
+                    item => item,
+                    StringComparer.OrdinalIgnoreCase);
             foreach (var message in messages)
             {
                 var outgoing = IsOutgoing(message);
@@ -627,8 +632,18 @@ namespace TransportHub.Desktop.Forms
                     size = message.Attachment.SizeBytes;
                     attachmentPaths.TryGetValue(message.Id, out absolutePath);
                 }
+                IncomingTransferInfo incomingTransfer = null;
+                if (!String.IsNullOrWhiteSpace(relativePath))
+                {
+                    incomingTransfers.TryGetValue(relativePath.Replace('\\', '/'), out incomingTransfer);
+                    if (incomingTransfer != null)
+                    {
+                        incomingTransfers.Remove(relativePath.Replace('\\', '/'));
+                    }
+                }
                 signatureParts.Add("attachment:" + message.Id + ":" +
-                    (absolutePath == null ? "pending" : "available"));
+                    (absolutePath == null ? "pending" : "available") + ":" +
+                    (incomingTransfer == null ? "-" : incomingTransfer.Percent.ToString()));
 
                 viewModels.Add(new TimelineItemViewModel
                 {
@@ -642,8 +657,31 @@ namespace TransportHub.Desktop.Forms
                     AbsolutePath = absolutePath,
                     MimeType = mimeType,
                     SizeBytes = size,
+                    AttachmentProgress = incomingTransfer == null
+                        ? null
+                        : BuildIncomingProgress(incomingTransfer),
                     Timestamp = message.CreatedUtc.ToLocalTime(),
                     DeliverySummary = delivery
+                });
+            }
+
+            foreach (var transfer in incomingTransfers.Values.OrderBy(item => item.FileName,
+                StringComparer.CurrentCultureIgnoreCase))
+            {
+                signatureParts.Add("incoming:" + transfer.RelativePath + ":" + transfer.Percent);
+                viewModels.Add(new TimelineItemViewModel
+                {
+                    MessageId = "incoming:" + transfer.RelativePath,
+                    Kind = TimelineMessageKind.Attachment,
+                    IsOutgoing = false,
+                    SenderName = transfer.SenderName,
+                    RelativePath = transfer.RelativePath,
+                    AbsolutePath = null,
+                    MimeType = "application/octet-stream",
+                    SizeBytes = transfer.BytesTotal,
+                    AttachmentProgress = BuildIncomingProgress(transfer),
+                    Timestamp = default(DateTime),
+                    DeliverySummary = String.Empty
                 });
             }
 
@@ -1461,6 +1499,7 @@ namespace TransportHub.Desktop.Forms
         {
             var status = _statusService.Current;
             _lastNetworkDetail = status.Detail;
+            Interlocked.Exchange(ref _reloadPending, 1);
             if (status.Running && status.FolderIdle)
             {
                 Interlocked.Exchange(ref _reloadPending, 1);
@@ -1492,6 +1531,15 @@ namespace TransportHub.Desktop.Forms
                 _layoutHeader();
             }
             RaiseStateChanged();
+        }
+
+        private string BuildIncomingProgress(IncomingTransferInfo transfer)
+        {
+            var speed = _statusService.Current.DownloadBytesPerSecond > 0L
+                ? " · " + SyncthingStatusService.FormatTransferRates(
+                    _statusService.Current.DownloadBytesPerSecond, 0L).Replace("↓ ", String.Empty)
+                : String.Empty;
+            return "接收 " + transfer.Percent + "%" + speed;
         }
 
         private void RestoreHeaderStatus()
