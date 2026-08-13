@@ -29,6 +29,7 @@ namespace TransportHub.Desktop.Testing
                 RunTransferScenario(root, lines);
                 RunPathSafetyScenario(root, lines);
                 RunConnectionCodeScenario(lines);
+                RunTransferRateFormattingScenario(lines);
                 lines.Add("PASS: all TransportHub self-tests completed");
                 WriteResult(lines, true);
                 return 0;
@@ -148,6 +149,17 @@ namespace TransportHub.Desktop.Testing
             AssertThrows<ArgumentException>(() => ConnectionService.ParseConnectionCode(String.Empty),
                 "Empty connection codes must be rejected.");
             lines.Add("PASS: connection-code round trip and invalid-input rejection");
+        }
+
+        private static void RunTransferRateFormattingScenario(ICollection<string> lines)
+        {
+            Assert(SyncthingStatusService.FormatTransferRates(0, 0) == "测速中",
+                "Zero traffic did not use the measuring label.");
+            Assert(SyncthingStatusService.FormatTransferRates(1572864, 0) == "↓ 1.5 MB/s",
+                "Download speed formatting was incorrect.");
+            Assert(SyncthingStatusService.FormatTransferRates(2048, 1048576) == "↓ 2 KB/s · ↑ 1.0 MB/s",
+                "Bidirectional speed formatting was incorrect.");
+            lines.Add("PASS: compact live transfer-rate formatting");
         }
 
         private static void RunRecentSelectionScenario(string root, ICollection<string> lines)

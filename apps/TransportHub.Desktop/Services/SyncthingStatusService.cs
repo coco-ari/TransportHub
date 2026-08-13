@@ -19,6 +19,8 @@ namespace TransportHub.Desktop.Services
         internal int OnlineDevices { get; set; }
         internal int TotalDevices { get; set; }
         internal bool FolderIdle { get; set; }
+        internal long DownloadBytesPerSecond { get; set; }
+        internal long UploadBytesPerSecond { get; set; }
         internal string Detail { get; set; }
     }
 
@@ -30,6 +32,10 @@ namespace TransportHub.Desktop.Services
         private Timer _timer;
         private int _refreshing;
         private bool _disposed;
+        private bool _hasTrafficSample;
+        private long _previousReceivedBytes;
+        private long _previousSentBytes;
+        private DateTime _previousTrafficSampleUtc;
 
         internal SyncthingStatusService(SyncthingContext context)
         {
@@ -96,6 +102,10 @@ namespace TransportHub.Desktop.Services
 
                 var onlineIds = GetOnlineTargetIds(connectionsObject);
                 var online = onlineIds.Count;
+                long downloadBytesPerSecond;
+                long uploadBytesPerSecond;
+                SampleTransferRates(connectionsObject, onlineIds, DateTime.UtcNow,
+                    out downloadBytesPerSecond, out uploadBytesPerSecond);
                 var state = GetString(folderObject, "state");
                 var idle = string.Equals(state, "idle", StringComparison.OrdinalIgnoreCase);
                 var remoteComplete = idle && await AreRemoteFoldersCompleteAsync(onlineIds).ConfigureAwait(false);
@@ -106,7 +116,7 @@ namespace TransportHub.Desktop.Services
                         ? "设备均离线，内容将在上线后同步"
                         : remoteComplete
                             ? online + " 台在线 · 目录最新"
-                            : online + " 台在线 · 正在同步";
+                            : "同步中 · " + FormatTransferRates(downloadBytesPerSecond, uploadBytesPerSecond);
 
                 var identityMatches = string.IsNullOrWhiteSpace(GetString(statusObject, "myID")) ||
                     string.Equals(GetString(statusObject, "myID"), _context.LocalDeviceId, StringComparison.OrdinalIgnoreCase);
@@ -121,6 +131,8 @@ namespace TransportHub.Desktop.Services
                     OnlineDevices = online,
                     TotalDevices = total,
                     FolderIdle = identityMatches && idle,
+                    DownloadBytesPerSecond = downloadBytesPerSecond,
+                    UploadBytesPerSecond = uploadBytesPerSecond,
                     Detail = detail
                 });
             }
@@ -173,6 +185,111 @@ namespace TransportHub.Desktop.Services
                 }
             }
             return result;
+        }
+
+        private void SampleTransferRates(
+            IDictionary<string, object> root,
+            IEnumerable<string> onlineDeviceIds,
+            DateTime sampledUtc,
+            out long downloadBytesPerSecond,
+            out long uploadBytesPerSecond)
+        {
+            downloadBytesPerSecond = 0;
+            uploadBytesPerSecond = 0;
+            object rawConnections;
+            var connections = root != null && root.TryGetValue("connections", out rawConnections)
+                ? AsDictionary(rawConnections)
+                : null;
+            if (connections == null)
+            {
+                _hasTrafficSample = false;
+                return;
+            }
+
+            var onlineIds = new HashSet<string>(onlineDeviceIds ?? Enumerable.Empty<string>(),
+                StringComparer.OrdinalIgnoreCase);
+            long receivedBytes = 0;
+            long sentBytes = 0;
+            foreach (var pair in connections)
+            {
+                if (!onlineIds.Contains(pair.Key))
+                {
+                    continue;
+                }
+                var connection = AsDictionary(pair.Value);
+                receivedBytes = SaturatingAdd(receivedBytes, GetLong(connection, "inBytesTotal"));
+                sentBytes = SaturatingAdd(sentBytes, GetLong(connection, "outBytesTotal"));
+            }
+
+            if (_hasTrafficSample)
+            {
+                var elapsed = (sampledUtc - _previousTrafficSampleUtc).TotalSeconds;
+                if (elapsed > 0.25d && receivedBytes >= _previousReceivedBytes && sentBytes >= _previousSentBytes)
+                {
+                    downloadBytesPerSecond = RatePerSecond(receivedBytes - _previousReceivedBytes, elapsed);
+                    uploadBytesPerSecond = RatePerSecond(sentBytes - _previousSentBytes, elapsed);
+                }
+            }
+            _previousReceivedBytes = receivedBytes;
+            _previousSentBytes = sentBytes;
+            _previousTrafficSampleUtc = sampledUtc;
+            _hasTrafficSample = onlineIds.Count > 0;
+        }
+
+        internal static string FormatTransferRates(long downloadBytesPerSecond, long uploadBytesPerSecond)
+        {
+            downloadBytesPerSecond = Math.Max(0L, downloadBytesPerSecond);
+            uploadBytesPerSecond = Math.Max(0L, uploadBytesPerSecond);
+            if (downloadBytesPerSecond == 0L && uploadBytesPerSecond == 0L)
+            {
+                return "测速中";
+            }
+            if (downloadBytesPerSecond == 0L)
+            {
+                return "↑ " + FormatRate(uploadBytesPerSecond);
+            }
+            if (uploadBytesPerSecond == 0L)
+            {
+                return "↓ " + FormatRate(downloadBytesPerSecond);
+            }
+            return "↓ " + FormatRate(downloadBytesPerSecond) + " · ↑ " + FormatRate(uploadBytesPerSecond);
+        }
+
+        private static string FormatRate(long bytesPerSecond)
+        {
+            const double kibibyte = 1024d;
+            const double mebibyte = 1024d * 1024d;
+            const double gibibyte = 1024d * 1024d * 1024d;
+            if (bytesPerSecond >= gibibyte)
+            {
+                return (bytesPerSecond / gibibyte).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " GB/s";
+            }
+            if (bytesPerSecond >= mebibyte)
+            {
+                return (bytesPerSecond / mebibyte).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " MB/s";
+            }
+            return Math.Max(1d, bytesPerSecond / kibibyte).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " KB/s";
+        }
+
+        private static long GetLong(IDictionary<string, object> dictionary, string key)
+        {
+            object value;
+            long parsed;
+            return dictionary != null && dictionary.TryGetValue(key, out value) && value != null &&
+                Int64.TryParse(Convert.ToString(value), out parsed) && parsed > 0L
+                ? parsed
+                : 0L;
+        }
+
+        private static long SaturatingAdd(long left, long right)
+        {
+            return right > 0L && left > Int64.MaxValue - right ? Int64.MaxValue : left + Math.Max(0L, right);
+        }
+
+        private static long RatePerSecond(long bytes, double seconds)
+        {
+            var rate = bytes / seconds;
+            return rate >= Int64.MaxValue ? Int64.MaxValue : Math.Max(0L, (long)Math.Round(rate));
         }
 
         private async Task<bool> AreRemoteFoldersCompleteAsync(IEnumerable<string> deviceIds)
