@@ -1,6 +1,6 @@
 #define AppName "TransportHub"
 #ifndef AppVersion
-  #define AppVersion "0.1.4"
+  #define AppVersion "0.1.5"
 #endif
 #ifndef RepositoryRoot
   #error RepositoryRoot must be supplied to ISCC.
@@ -39,6 +39,7 @@ VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#AppVersion}
 VersionInfoCompany=TransportHub
 VersionInfoDescription=TransportHub Windows installer
+SetupIconFile={#RepositoryRoot}\apps\TransportHub.Desktop\Assets\TransportHub.ico
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

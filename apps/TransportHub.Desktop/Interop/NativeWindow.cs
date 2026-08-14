@@ -7,6 +7,7 @@ namespace TransportHub.Desktop.Interop
 {
     internal static class NativeWindow
     {
+        private const string ApplicationIconResource = "TransportHub.Desktop.Assets.TransportHub.ico";
         private const int WmNclbuttondown = 0x00A1;
         private const int HtCaption = 0x0002;
 
@@ -68,6 +69,25 @@ namespace TransportHub.Desktop.Interop
 
         internal static Icon CreateApplicationIcon(int size)
         {
+            size = Math.Max(16, size);
+            try
+            {
+                using (var stream = typeof(NativeWindow).Assembly.GetManifestResourceStream(ApplicationIconResource))
+                {
+                    if (stream != null)
+                    {
+                        using (var icon = new Icon(stream, size, size))
+                        {
+                            return (Icon)icon.Clone();
+                        }
+                    }
+                }
+            }
+            catch (ArgumentException)
+            {
+                // Keep a safe fallback for development builds with a malformed resource.
+            }
+
             using (var bitmap = new Bitmap(size, size))
             using (var graphics = Graphics.FromImage(bitmap))
             using (var brush = new SolidBrush(UI.Theme.Purple))

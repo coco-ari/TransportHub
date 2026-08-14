@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading;
 using TransportHub.Desktop.Core;
 using TransportHub.Desktop.Forms;
+using TransportHub.Desktop.Interop;
 using TransportHub.Desktop.Models;
 using TransportHub.Desktop.Services;
 using TransportHub.Desktop.UI;
@@ -34,6 +35,7 @@ namespace TransportHub.Desktop.Testing
                 RunTransferRateFormattingScenario(lines);
                 RunIncomingTransferScenario(lines);
                 RunTimelineLayoutScenario(lines);
+                RunApplicationIconScenario(lines);
                 lines.Add("PASS: all TransportHub self-tests completed");
                 WriteResult(lines, true);
                 return 0;
@@ -239,6 +241,19 @@ namespace TransportHub.Desktop.Testing
             }
             lines.Add("PASS: attachment fonts and timestamp fit without overlap");
             lines.Add("PASS: missing attachment is labeled as deleted");
+        }
+
+        private static void RunApplicationIconScenario(ICollection<string> lines)
+        {
+            using (var small = NativeWindow.CreateApplicationIcon(16))
+            using (var large = NativeWindow.CreateApplicationIcon(64))
+            {
+                Assert(small != null && small.Width == 16 && small.Height == 16,
+                    "Embedded 16-pixel application icon could not be loaded.");
+                Assert(large != null && large.Width == 64 && large.Height == 64,
+                    "Embedded 64-pixel application icon could not be loaded.");
+            }
+            lines.Add("PASS: embedded multi-size application icon");
         }
 
         private static void RunRecentSelectionScenario(string root, ICollection<string> lines)

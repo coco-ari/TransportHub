@@ -110,9 +110,13 @@ $projectPath = Join-Path -Path $projectDirectory -ChildPath 'TransportHub.Deskto
 $outputDirectory = Join-Path -Path $repositoryRoot -ChildPath 'artifacts\TransportHub.Desktop'
 $outputExecutable = Join-Path -Path $outputDirectory -ChildPath 'TransportHub.exe'
 $outputPdb = Join-Path -Path $outputDirectory -ChildPath 'TransportHub.pdb'
+$iconPath = Join-Path -Path $projectDirectory -ChildPath 'Assets\TransportHub.ico'
 
 if (-not (Test-Path -LiteralPath $projectPath -PathType Leaf)) {
     throw "Desktop project not found: $projectPath"
+}
+if (-not (Test-Path -LiteralPath $iconPath -PathType Leaf)) {
+    throw "Application icon not found: $iconPath"
 }
 
 [xml] $projectXml = Get-Content -LiteralPath $projectPath -Raw
@@ -213,7 +217,9 @@ foreach ($argument in @(
         '/deterministic+',
         "/pathmap:$repositoryRoot=.",
         "/out:$outputExecutable",
-        "/win32manifest:$manifestPath"
+        "/win32manifest:$manifestPath",
+        "/win32icon:$iconPath",
+        "/resource:$iconPath,TransportHub.Desktop.Assets.TransportHub.ico"
     )) {
     [void] $compilerArguments.Add($argument)
 }

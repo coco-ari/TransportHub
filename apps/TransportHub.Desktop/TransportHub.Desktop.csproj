@@ -8,6 +8,7 @@
     <OutputType>WinExe</OutputType>
     <RootNamespace>TransportHub.Desktop</RootNamespace>
     <AssemblyName>TransportHub</AssemblyName>
+    <ApplicationIcon>Assets\TransportHub.ico</ApplicationIcon>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
@@ -64,8 +65,12 @@
     <Compile Include="UI\TimelineItemControl.cs" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Assets\TransportHub.ico">
+      <LogicalName>TransportHub.Desktop.Assets.TransportHub.ico</LogicalName>
+    </EmbeddedResource>
     <None Include="App.config" />
     <None Include="app.manifest" />
+    <None Include="Assets\TransportHub.png" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
